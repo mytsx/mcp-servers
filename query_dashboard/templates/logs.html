@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Query Logs - MCP Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <!-- Navigation -->
+    <nav class="bg-blue-600 text-white p-4">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-2xl font-bold">
+                <i class="fas fa-database mr-2"></i>
+                MCP Query Dashboard
+            </h1>
+            <div class="space-x-4">
+                <a href="/" class="hover:text-blue-200">Dashboard</a>
+                <a href="/logs" class="hover:text-blue-200 font-medium">Query Logs</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="container mx-auto p-6">
+        <!-- Search and Filters -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex flex-col md:flex-row gap-4">
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Search Queries</label>
+                    <div class="relative">
+                        <input type="text" id="search-input" placeholder="Search in query text..." 
+                               class="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center">
+                            <i class="fas fa-search text-gray-400"></i>
+                        </div>
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Server Type</label>
+                    <select id="server-filter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">All Servers</option>
+                        <option value="postgresql">PostgreSQL</option>
+                        <option value="oracle">Oracle</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Status</label>
+                    <select id="status-filter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="">All Status</option>
+                        <option value="success">Success</option>
+                        <option value="error">Error</option>
+                    </select>
+                </div>
+                
+                <div class="flex items-end">
+                    <button onclick="loadLogs()" class="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                        <i class="fas fa-search mr-2"></i>Search
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs Table -->
+        <div class="bg-white rounded-lg shadow-md overflow-hidden">
+            <div class="px-6 py-4 bg-gray-50 border-b">
+                <h3 class="text-lg font-semibold flex items-center">
+                    <i class="fas fa-list mr-2 text-blue-600"></i>
+                    Query Logs
+                    <span id="logs-count" class="ml-2 text-sm text-gray-500"></span>
+                </h3>
+            </div>
+            
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Server</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Query</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time (ms)</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rows</th>
+                            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logs-table-body" class="bg-white divide-y divide-gray-200">
+                        <!-- Logs will be loaded here -->
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Loading indicator -->
+            <div id="loading-indicator" class="text-center py-8 hidden">
+                <i class="fas fa-spinner fa-spin text-2xl text-gray-400"></i>
+                <p class="text-gray-500 mt-2">Loading logs...</p>
+            </div>
+            
+            <!-- Empty state -->
+            <div id="empty-state" class="text-center py-12 hidden">
+                <i class="fas fa-search text-4xl text-gray-300 mb-4"></i>
+                <p class="text-gray-500">No logs found matching your criteria</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Query Detail Modal -->
+    <div id="query-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg max-w-6xl w-full max-h-screen overflow-y-auto">
+                <div class="px-6 py-4 bg-gray-50 border-b flex justify-between items-center">
+                    <h3 class="text-lg font-semibold">Query Details</h3>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+                <div id="modal-content" class="p-6">
+                    <!-- Modal content will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentLogs = [];
+
+        // Load logs with optional filters
+        async function loadLogs() {
+            const loadingIndicator = document.getElementById('loading-indicator');
+            const emptyState = document.getElementById('empty-state');
+            const tableBody = document.getElementById('logs-table-body');
+            
+            loadingIndicator.classList.remove('hidden');
+            emptyState.classList.add('hidden');
+            tableBody.innerHTML = '';
+
+            try {
+                const searchQuery = document.getElementById('search-input').value;
+                const serverType = document.getElementById('server-filter').value;
+                const status = document.getElementById('status-filter').value;
+
+                let url = '/api/logs?limit=100';
+                if (serverType) url += `&server_type=${serverType}`;
+
+                const response = await fetch(url);
+                let logs = await response.json();
+
+                // Apply client-side filters
+                if (searchQuery) {
+                    logs = logs.filter(log => 
+                        log.query_text.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                        log.user_query.toLowerCase().includes(searchQuery.toLowerCase())
+                    );
+                }
+
+                if (status) {
+                    logs = logs.filter(log => log.status === status);
+                }
+
+                currentLogs = logs;
+                displayLogs(logs);
+
+            } catch (error) {
+                console.error('Error loading logs:', error);
+                tableBody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-red-500">Error loading logs</td></tr>';
+            } finally {
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        function displayLogs(logs) {
+            const tableBody = document.getElementById('logs-table-body');
+            const emptyState = document.getElementById('empty-state');
+            const logsCount = document.getElementById('logs-count');
+
+            logsCount.textContent = `(${logs.length} logs)`;
+
+            if (logs.length === 0) {
+                emptyState.classList.remove('hidden');
+                return;
+            }
+
+            tableBody.innerHTML = logs.map(log => {
+                const statusBadge = getStatusBadge(log.status);
+                const serverBadge = getServerBadge(log.server_type);
+                const time = new Date(log.timestamp).toLocaleString('tr-TR');
+                const queryPreview = truncateText(log.query_text, 60);
+
+                return `
+                    <tr class="hover:bg-gray-50 cursor-pointer" onclick="showQueryDetail(${log.id})">
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${time}</td>
+                        <td class="px-6 py-4 whitespace-nowrap">${serverBadge}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${log.tool_name}</td>
+                        <td class="px-6 py-4 text-sm text-gray-900">
+                            <div class="max-w-xs">
+                                <p class="truncate" title="${log.query_text}">${queryPreview}</p>
+                                ${log.user_query ? `<p class="text-xs text-gray-500 truncate">User: ${truncateText(log.user_query, 40)}</p>` : ''}
+                            </div>
+                        </td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${log.execution_time_ms.toFixed(2)}</td>
+                        <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">${log.row_count}</td>
+                        <td class="px-6 py-4 whitespace-nowrap">${statusBadge}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function showQueryDetail(logId) {
+            const log = currentLogs.find(l => l.id === logId);
+            if (!log) return;
+
+            const modalContent = document.getElementById('modal-content');
+            const statusBadge = getStatusBadge(log.status);
+            const serverBadge = getServerBadge(log.server_type);
+            const time = new Date(log.timestamp).toLocaleString('tr-TR');
+
+            modalContent.innerHTML = `
+                <div class="space-y-6">
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Server</label>
+                            <div class="mt-1">${serverBadge}</div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Tool</label>
+                            <p class="mt-1 text-sm">${log.tool_name}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Status</label>
+                            <div class="mt-1">${statusBadge}</div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Time</label>
+                            <p class="mt-1 text-sm">${time}</p>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Execution Time</label>
+                            <p class="mt-1 text-sm">${log.execution_time_ms.toFixed(2)} ms</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Row Count</label>
+                            <p class="mt-1 text-sm">${log.row_count} rows</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Log ID</label>
+                            <p class="mt-1 text-sm">#${log.id}</p>
+                        </div>
+                    </div>
+
+                    ${log.user_query ? `
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">User Query</label>
+                        <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <pre class="text-sm text-blue-800 whitespace-pre-wrap">${log.user_query}</pre>
+                        </div>
+                    </div>
+                    ` : ''}
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">SQL Query</label>
+                        <div class="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                            <pre class="text-sm text-gray-800 whitespace-pre-wrap overflow-x-auto">${log.query_text}</pre>
+                        </div>
+                    </div>
+
+                    ${log.error_message ? `
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Error Message</label>
+                        <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                            <pre class="text-sm text-red-800 whitespace-pre-wrap">${log.error_message}</pre>
+                        </div>
+                    </div>
+                    ` : ''}
+
+                    ${log.response_text && log.response_text.trim() ? `
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Query Results</label>
+                        <div class="bg-green-50 border border-green-200 rounded-lg p-4 max-h-screen overflow-y-auto">
+                            ${formatAsTable(log.response_text)}
+                        </div>
+                    </div>
+                    ` : ''}
+                </div>
+            `;
+
+            document.getElementById('query-modal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('query-modal').classList.add('hidden');
+        }
+
+        function getStatusBadge(status) {
+            if (status === 'success') {
+                return '<span class="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">Success</span>';
+            } else {
+                return '<span class="px-2 py-1 text-xs font-medium bg-red-100 text-red-800 rounded-full">Error</span>';
+            }
+        }
+
+        function getServerBadge(serverType) {
+            const colors = {
+                'postgresql': 'bg-blue-100 text-blue-800',
+                'oracle': 'bg-red-100 text-red-800'
+            };
+            const color = colors[serverType] || 'bg-gray-100 text-gray-800';
+            return `<span class="px-2 py-1 text-xs font-medium rounded ${color}">${serverType.toUpperCase()}</span>`;
+        }
+
+        function truncateText(text, maxLength) {
+            if (text.length <= maxLength) return text;
+            return text.substring(0, maxLength) + '...';
+        }
+
+        function formatAsTable(responseText) {
+            const lines = responseText.split('\n');
+            let headerLine = '';
+            let dataLines = [];
+            let inTable = false;
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                
+                // Skip header lines with query info
+                if (line.includes('🔍') || line.includes('📊') || line.includes('===')) {
+                    continue;
+                }
+                
+                // Found table header (line with |)
+                if (line.includes(' | ') && !headerLine && !line.includes('----')) {
+                    headerLine = line.trim();
+                    inTable = true;
+                    continue;
+                }
+                
+                // Skip separator line
+                if (line.includes('----')) {
+                    continue;
+                }
+                
+                // Collect data rows
+                if (inTable && line.includes(' | ') && line.trim()) {
+                    dataLines.push(line.trim());
+                }
+                
+                // Handle truncated text - add warning for incomplete data
+                if (inTable && line.trim() && !line.includes(' | ') && dataLines.length > 0) {
+                    // This might be a truncated line, skip it or add as incomplete
+                    console.warn('Possible truncated line detected:', line);
+                }
+            }
+            
+            // If we found a table, format it as HTML
+            if (headerLine && dataLines.length > 0) {
+                const headers = headerLine.split(' | ').map(h => h.trim());
+                
+                let tableHtml = '<div class="overflow-x-auto"><table class="min-w-full text-xs border-collapse">';
+                
+                // Table header
+                tableHtml += '<thead class="bg-green-100"><tr>';
+                headers.forEach(header => {
+                    tableHtml += `<th class="border border-green-300 px-2 py-1 text-left font-semibold">${header}</th>`;
+                });
+                tableHtml += '</tr></thead>';
+                
+                // Table body
+                tableHtml += '<tbody>';
+                dataLines.forEach((line, index) => {
+                    const cells = line.split(' | ').map(c => c.trim());
+                    const expectedCols = headers.length;
+                    const rowClass = index % 2 === 0 ? 'bg-white' : 'bg-green-25';
+                    
+                    tableHtml += `<tr class="${rowClass}">`;
+                    
+                    // Fill cells
+                    for (let i = 0; i < expectedCols; i++) {
+                        let cellContent = cells[i] || '';
+                        tableHtml += `<td class="border border-green-200 px-2 py-1">${cellContent}</td>`;
+                    }
+                    
+                    tableHtml += '</tr>';
+                });
+                tableHtml += '</tbody></table></div>';
+                
+                return tableHtml;
+            }
+            
+            // Fallback to pre-formatted text
+            return `<pre class="text-xs font-mono text-green-800 whitespace-pre-wrap overflow-x-auto">${responseText}</pre>`;
+        }
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', function() {
+            loadLogs();
+
+            // Enter key search
+            document.getElementById('search-input').addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    loadLogs();
+                }
+            });
+
+            // Close modal on ESC
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') {
+                    closeModal();
+                }
+            });
+
+            // Close modal on background click
+            document.getElementById('query-modal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeModal();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+/* Git MCP Extended Logs - Custom Styles */
+.command-cell { 
+    max-width: 200px; 
+}
+
+.args-cell { 
+    max-width: 300px; 
+}
+
+.truncate-multiline {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}

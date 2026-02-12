@@ -1,0 +1,24 @@
+{
+  "name": "gib-api-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for GIB API - Late payment interest calculator",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "mcp",
+    "gib",
+    "tax",
+    "interest",
+    "turkey"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.5.0",
+    "node-fetch": "^3.3.2"
+  }
+}

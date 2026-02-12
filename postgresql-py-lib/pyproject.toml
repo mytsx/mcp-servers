@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "postgresql-py-lib"
+version = "1.0.0"
+description = "Modern PostgreSQL database library with natural language query support"
+readme = "README.md"
+authors = [
+    {name = "AI DB Library", email = "example@example.com"},
+]
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["postgresql", "database", "query", "natural-language", "sql"]
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+    "python-dotenv>=1.0.0",
+    "typing-extensions>=4.0.0",
+]
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "mypy>=1.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/postgresql-py-lib"
+Repository = "https://github.com/example/postgresql-py-lib"
+Documentation = "https://github.com/example/postgresql-py-lib#readme"
+"Bug Tracker" = "https://github.com/example/postgresql-py-lib/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

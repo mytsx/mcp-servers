@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Screenshots/Output images
+output-*.png
+terminal-*.png
+temp-*.png
+
+# Session files
+session-state.json
+
+# Firebase
+firebase-debug.log

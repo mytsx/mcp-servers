@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Git MCP Extended Logs</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-3xl font-bold mb-6 text-gray-800">Git MCP Extended Logs</h1>
+        
+        <div class="mb-4 flex gap-4">
+            <input type="text" id="searchInput" placeholder="Search commands..." 
+                   class="px-4 py-2 border rounded-lg flex-1">
+            <select id="statusFilter" class="px-4 py-2 border rounded-lg">
+                <option value="">All Status</option>
+                <option value="success">Success</option>
+                <option value="error">Error</option>
+            </select>
+        </div>
+        
+        <div class="bg-white rounded-lg shadow overflow-hidden">
+            <table class="min-w-full">
+                <thead class="bg-gray-50">
+                    <tr>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Command</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Arguments</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="logsTable" class="bg-white divide-y divide-gray-200">
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Detail Modal -->
+    <div id="detailModal" class="fixed inset-0 bg-gray-600 bg-opacity-50 hidden overflow-y-auto h-full w-full">
+        <div class="relative top-20 mx-auto p-5 border w-11/12 max-w-4xl shadow-lg rounded-md bg-white">
+            <div class="mt-3">
+                <h3 class="text-lg leading-6 font-medium text-gray-900 mb-4">Command Details</h3>
+                <div id="modalContent" class="mt-2 space-y-4">
+                </div>
+                <div class="mt-4">
+                    <button onclick="closeModal()" 
+                            class="px-4 py-2 bg-blue-500 text-white text-base font-medium rounded-md shadow-sm hover:bg-blue-700">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const wsUrl = `ws://${window.location.host}/ws`;
+        const apiUrl = '/api/logs?limit=100';
+    </script>
+    <script src="/static/js/logs.js"></script>
+</body>
+</html>

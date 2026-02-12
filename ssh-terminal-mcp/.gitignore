@@ -1,0 +1,63 @@
+# Node modules
+node_modules/
+
+# Session ve hassas bilgiler
+session-state.json
+*.session
+*.auth
+credentials.json
+.env
+.env.local
+.env.*
+
+# Screenshots ve geçici dosyalar
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.svg
+temp-ocr-*.png
+output-*.png
+terminal-*.png
+ocr-test-*.png
+
+# Log dosyaları
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test dosyaları
+# test-*.js
+# !test.js
+
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
+
+# Tesseract cache
+eng.traineddata
+*.traineddata
+
+# Backup dosyaları
+*.backup
+*.bak
+*.tmp
+
+# OS dosyaları
+Thumbs.db
+Desktop.ini
+
+# npm/yarn
+.npm
+.yarn
