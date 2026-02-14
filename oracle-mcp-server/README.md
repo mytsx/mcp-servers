@@ -1,58 +1,82 @@
-# Oracle MCP Server for Claude Desktop
+# Oracle MCP Server
 
-Bu proje, Oracle 19c veritabanınızı Claude Desktop uygulaması ile doğal dilde sorgulamanızı sağlar. PostgreSQL MCP Server ile aynı özelliklere sahip, Oracle'a özgü optimizasyonlar içerir.
+Natural language queries to Oracle database via Model Context Protocol (MCP).
 
-## 🚀 Özellikler
+Oracle 19c veritabanınızı Claude Desktop ile doğal dilde sorgulayın.
 
-- ✅ **Oracle 19c** tam desteği
-- ✅ Doğal dil sorguları (Türkçe/İngilizce)
-- ✅ SQL sorgu çalıştırma (Oracle syntax)
-- ✅ Tablo yapısını görüntüleme
-- ✅ Veritabanı istatistikleri
-- ✅ Akıllı sorgu önerileri (AI-powered)
-- ✅ Güvenli bağlantı (environment variables)
-- ✅ Detaylı hata yönetimi
+## Features / Özellikler
 
-## 📋 Kurulum
+- ✅ Oracle 19c full support / Tam desteği
+- ✅ Natural language queries (Turkish/English) / Doğal dil sorguları
+- ✅ Execute Oracle SQL / SQL sorgu çalıştırma
+- ✅ Database schema exploration / Tablo yapısını görüntüleme
+- ✅ Database statistics / Veritabanı istatistikleri
+- ✅ Smart query suggestions / Akıllı sorgu önerileri
+- ✅ Secure connection via environment variables / Güvenli bağlantı
+- ✅ Oracle thin mode (no Instant Client required) / Instant Client gerektirmez
 
-1. **Gereksinimler:**
-   - Python 3.8+
-   - Oracle 19c veritabanı erişimi
-   - Claude Desktop uygulaması
+## Installation / Kurulum
 
-2. **Proje Kurulumu:**
-   ```bash
-   cd oracle-mcp-server
-   ./install.sh
-   ```
+### Option 1: Using uvx (Recommended / Önerilen)
 
-   Not: Oracle thin mode kullanılır, Instant Client gerekmez.
+No installation required! Just configure Claude Desktop:
 
-## ⚙️ Yapılandırma
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mcp-server-oracle"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=username;Password=password;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=hostname)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=service)))"
+      }
+    }
+  }
+}
+```
 
-1. **Environment Variables:**
-   `.env` dosyasındaki bağlantı bilgilerini güncelleyin:
-   ```env
-   # Oracle Database Configuration
-   ORACLE_CONNECTION_STRING=User Id=MADEN;Password=MADEN;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=10.50.53.15)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=madendev)))
-   
-   # AI Configuration (optional)
-   ANTHROPIC_API_KEY=your_api_key_here
-   ```
+### Option 2: Install from PyPI
 
-2. **Claude Desktop Konfigürasyonu:**
-   `~/Library/Application Support/Claude/claude_desktop_config.json`:
-   ```json
-   {
-     "mcpServers": {
-       "oracle-db": {
-         "command": "/Users/yerli/Developer/ai_db/oracle-mcp-server/venv/bin/python",
-         "args": ["/Users/yerli/Developer/ai_db/oracle-mcp-server/server.py"],
-         "cwd": "/Users/yerli/Developer/ai_db/oracle-mcp-server"
-       }
-     }
-   }
-   ```
+```bash
+pip install mcp-server-oracle
+```
+
+### Option 3: Install from Source / Kaynak Koddan Kurulum
+
+```bash
+cd oracle-mcp-server
+pip install -e .
+```
+
+## Configuration / Yapılandırma
+
+### Claude Desktop Configuration
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mcp-server-oracle"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
+      }
+    }
+  }
+}
+```
+
+### Environment Variables
+
+Alternatively, create a `.env` file:
+
+```env
+ORACLE_CONNECTION_STRING=User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))
+```
 
 ## 🛠️ Kullanım
 

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-server-ssh"
+version = "1.0.0"
+description = "SSH MCP server for remote Linux command execution via Model Context Protocol"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["mcp", "model-context-protocol", "ssh", "remote", "linux", "claude"]
+dependencies = [
+    "mcp>=1.0.0",
+    "paramiko>=3.4.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+mcp-server-ssh = "mcp_server_ssh.__main__:run"
+
+[tool.setuptools]
+packages = ["mcp_server_ssh"]
+package-dir = {"" = "src"}

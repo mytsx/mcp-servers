@@ -1,59 +1,93 @@
-# PostgreSQL MCP Server for Claude Desktop
+# PostgreSQL MCP Server
 
-Bu proje, PostgreSQL veritabanınızı Claude Desktop uygulaması ile doğal dilde sorgulamanızı sağlar.
+Natural language queries to PostgreSQL database via Model Context Protocol (MCP).
 
-## Özellikler
+PostgreSQL veritabanınızı Claude Desktop ile doğal dilde sorgulayın.
 
-- ✅ PostgreSQL veritabanı bağlantısı
-- ✅ Doğal dil sorguları (Türkçe/İngilizce)
-- ✅ SQL sorgu çalıştırma
-- ✅ Tablo yapısını görüntüleme  
-- ✅ Veritabanı istatistikleri
-- ✅ Akıllı sorgu önerileri
-- ✅ Güvenli bağlantı (environment variables)
-- ✅ Detaylı hata yönetimi
+## Features / Özellikler
 
-## Kurulum
+- ✅ PostgreSQL database connection / Veritabanı bağlantısı
+- ✅ Natural language queries (Turkish/English) / Doğal dil sorguları
+- ✅ Execute SQL queries / SQL sorgu çalıştırma
+- ✅ Database schema exploration / Tablo yapısını görüntüleme
+- ✅ Database statistics / Veritabanı istatistikleri
+- ✅ Smart query suggestions / Akıllı sorgu önerileri
+- ✅ Secure connection via environment variables / Güvenli bağlantı
 
-1. **PostgreSQL Sunucusu:**
-   PostgreSQL sunucusunun çalıştığından emin olun:
-   ```bash
-   brew services start postgresql
-   # veya
-   pg_ctl -D /usr/local/var/postgres start
-   ```
+## Installation / Kurulum
 
-2. **Proje Kurulumu:**
-   ```bash
-   cd postgresql-mcp-server
-   ./install.sh
-   ```
+### Option 1: Using uvx (Recommended / Önerilen)
 
-## Yapılandırma
+No installation required! Just configure Claude Desktop:
 
-1. **Environment Variables:**
-   `.env` dosyasındaki bağlantı bilgilerini güncelleyin:
-   ```env
-   DB_HOST=localhost
-   DB_PORT=5432
-   DB_NAME=docsmapeg
-   DB_USER=postgres
-   DB_PASSWORD=postgres
-   ```
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mcp-server-postgres"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "your_database",
+        "DB_USER": "your_user",
+        "DB_PASSWORD": "your_password"
+      }
+    }
+  }
+}
+```
 
-2. **Claude Desktop Konfigürasyonu:**
-   Config dosyası otomatik olarak güncellendi:
-   ```json
-   {
-     "mcpServers": {
-       "postgresql-db": {
-         "command": "/Users/yerli/Developer/ai_db/postgresql-mcp-server/venv/bin/python",
-         "args": ["/Users/yerli/Developer/ai_db/postgresql-mcp-server/server.py"],
-         "cwd": "/Users/yerli/Developer/ai_db/postgresql-mcp-server"
-       }
-     }
-   }
-   ```
+### Option 2: Install from PyPI
+
+```bash
+pip install mcp-server-postgres
+```
+
+### Option 3: Install from Source / Kaynak Koddan Kurulum
+
+```bash
+cd postgresql-mcp-server
+pip install -e .
+```
+
+## Configuration / Yapılandırma
+
+### Claude Desktop Configuration
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mcp-server-postgres"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
+```
+
+### Environment Variables
+
+Alternatively, create a `.env` file:
+
+```env
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=mydb
+DB_USER=postgres
+DB_PASSWORD=secret
+```
 
 ## Kullanım
 

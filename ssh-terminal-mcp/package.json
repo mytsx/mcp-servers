@@ -1,12 +1,18 @@
 {
   "name": "ssh-terminal-mcp",
   "version": "1.0.0",
-  "description": "MCP server for SSH terminal automation",
+  "description": "MCP server for SSH terminal automation with screenshot and OCR support",
   "type": "module",
   "main": "server.js",
+  "bin": {
+    "ssh-terminal-mcp": "server.js"
+  },
   "scripts": {
     "start": "node server.js"
   },
+  "keywords": ["mcp", "model-context-protocol", "ssh", "terminal", "ocr", "playwright"],
+  "license": "MIT",
+  "files": ["server.js", "README.md", "eng.traineddata"],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.5.0",
     "dotenv": "^17.1.0",
