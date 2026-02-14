@@ -20,18 +20,36 @@ An MCP (Model Context Protocol) server that enables AI assistants to interact wi
 
 ## Installation
 
+### Option 1: Using npx (Recommended)
+
+No installation required! Just configure Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "ssh-terminal": {
+      "command": "npx",
+      "args": ["-y", "ssh-terminal-mcp"],
+      "env": {
+        "TERMINAL_URL": "https://your-web-terminal-url"
+      }
+    }
+  }
+}
+```
+
+### Option 2: Install from npm
+
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd ssh_terminal_mcp
+npm install -g ssh-terminal-mcp
+```
 
-# Install dependencies
+### Option 3: Install from Source
+
+```bash
+cd ssh-terminal-mcp
 npm install
-
-# Install Playwright browsers
 npx playwright install chromium
-
-# Copy environment file and configure
 cp .env.example .env
 # Edit .env and set TERMINAL_URL
 ```
@@ -40,14 +58,16 @@ cp .env.example .env
 
 ### 1. Configure Claude Desktop
 
-Add the server to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "ssh-terminal": {
-      "command": "node",
-      "args": ["/path/to/ssh_terminal_mcp/server.js"]
+      "command": "npx",
+      "args": ["-y", "ssh-terminal-mcp"]
     }
   }
 }

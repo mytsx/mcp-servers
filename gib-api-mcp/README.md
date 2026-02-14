@@ -2,24 +2,48 @@
 
 GIB (Gelir İdaresi Başkanlığı) gecikme zammı/faizi hesaplama API'si için MCP server.
 
-## Kurulum
+## Installation / Kurulum
 
-```bash
-npm install
-```
+### Option 1: Using npx (Recommended / Önerilen)
 
-## Kullanım
-
-### Claude Desktop'a Ekleme
-
-Claude Desktop ayarlarına (`~/Library/Application Support/Claude/claude_desktop_config.json`) ekleyin:
+No installation required! Just configure Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "gib-api": {
-      "command": "node",
-      "args": ["/Users/yerli/Developer/MCPs/gib-api-mcp/index.js"]
+      "command": "npx",
+      "args": ["-y", "gib-api-mcp"]
+    }
+  }
+}
+```
+
+### Option 2: Install from npm
+
+```bash
+npm install -g gib-api-mcp
+```
+
+### Option 3: Install from Source / Kaynak Koddan Kurulum
+
+```bash
+cd gib-api-mcp
+npm install
+```
+
+## Claude Desktop Configuration
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "gib-api": {
+      "command": "npx",
+      "args": ["-y", "gib-api-mcp"]
     }
   }
 }

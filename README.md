@@ -55,6 +55,33 @@ pip install -e .
       "env": {
         "ORACLE_CONNECTION_STRING": "User Id=user;Password=pass;Data Source=..."
       }
+    },
+    "ssh": {
+      "command": "uvx",
+      "args": ["mcp-server-ssh"],
+      "env": {
+        "SSH_HOST": "your_host",
+        "SSH_USER": "your_user",
+        "SSH_PASSWORD": "your_password"
+      }
+    },
+    "ssh-terminal": {
+      "command": "npx",
+      "args": ["-y", "ssh-terminal-mcp"],
+      "env": {
+        "TERMINAL_URL": "https://your-web-terminal-url"
+      }
+    },
+    "gemini-pr-reviews": {
+      "command": "uvx",
+      "args": ["mcp-gemini-pr-reviews"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_your_token"
+      }
+    },
+    "gib-api": {
+      "command": "npx",
+      "args": ["-y", "gib-api-mcp"]
     }
   }
 }

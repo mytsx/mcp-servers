@@ -15,48 +15,70 @@ MCP (Model Context Protocol) server for fetching Gemini Code Assist reviews from
 
 ## Installation
 
-1. Clone or download this repository
+### Option 1: Using uvx (Recommended)
 
-2. Run the installation script:
-   ```bash
-   cd /path/to/gh_tool
-   ./install.sh
-   ```
-   
-   This will:
-   - Create a Python virtual environment
-   - Install all required dependencies
-   - Create a `.env` file (if it doesn't exist)
-   - Make scripts executable
-
-3. Edit the `.env` file with your GitHub token:
-   ```bash
-   GITHUB_TOKEN=your_actual_github_token_here
-   ```
-
-   To get a GitHub token:
-   - Go to https://github.com/settings/tokens
-   - Click "Generate new token (classic)"
-   - Give it a name and select the `repo` scope
-   - Copy the generated token
-
-## Configuration for Claude Desktop
-
-Add this server to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+No installation required! Just configure Claude Desktop:
 
 ```json
 {
   "mcpServers": {
     "gemini-pr-reviews": {
-      "command": "/path/to/gh_tool/run.sh"
+      "command": "uvx",
+      "args": ["mcp-gemini-pr-reviews"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_your_token_here"
+      }
     }
   }
 }
 ```
 
-Replace `/path/to/gh_tool` with the actual path to this directory.
+### Option 2: Install from PyPI
 
-**Note:** The `run.sh` script automatically activates the virtual environment and runs the server. Your GitHub token should be in the `.env` file.
+```bash
+pip install mcp-gemini-pr-reviews
+```
+
+### Option 3: Install from Source
+
+```bash
+cd gh-tool
+pip install -e .
+# or
+./install.sh
+```
+
+### GitHub Token Setup
+
+1. Go to https://github.com/settings/tokens
+2. Click "Generate new token (classic)"
+3. Give it a name and select the `repo` scope
+4. Copy the generated token
+
+Create a `.env` file:
+```bash
+GITHUB_TOKEN=your_actual_github_token_here
+```
+
+## Configuration for Claude Desktop
+
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "gemini-pr-reviews": {
+      "command": "uvx",
+      "args": ["mcp-gemini-pr-reviews"],
+      "env": {
+        "GITHUB_TOKEN": "ghp_your_token_here"
+      }
+    }
+  }
+}
+```
 
 ## Available Tool
 

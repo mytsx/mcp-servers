@@ -24,38 +24,65 @@ SSH üzerinden uzak Linux sunucularında komut çalıştırma ve sistem yönetim
 - Process kill sadece numeric PID ile
 - Tüm işlemler loglanır
 
-## 📦 Kurulum
+## 📦 Installation / Kurulum
 
-### 1. Gereksinimler
-```bash
-Python 3.8+
-SSH erişimi olan Linux sunucu
+### Option 1: Using uvx (Recommended / Önerilen)
+
+No installation required! Just configure Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "uvx",
+      "args": ["mcp-server-ssh"],
+      "env": {
+        "SSH_HOST": "your_server_ip",
+        "SSH_PORT": "22",
+        "SSH_USER": "your_username",
+        "SSH_PASSWORD": "your_password"
+      }
+    }
+  }
+}
 ```
 
-### 2. Kurulum
+### Option 2: Install from PyPI
+
+```bash
+pip install mcp-server-ssh
+```
+
+### Option 3: Install from Source / Kaynak Koddan Kurulum
+
 ```bash
 cd ssh-mcp-server
+pip install -e .
+# or
 ./install.sh
 ```
 
-### 3. Konfigürasyon
+### Environment Variables
+
 `.env` dosyasını düzenleyin:
 ```env
 SSH_HOST=your_server_ip
 SSH_PORT=22
-SSH_USER=your_username  
+SSH_USER=your_username
 SSH_PASSWORD=your_password
 SSH_TIMEOUT=30
 ```
 
-### 4. Test
+### Test
 ```bash
 python test_ssh.py
 ```
 
-## 🔧 Claude Desktop Konfigürasyonu
+## 🔧 Claude Desktop Configuration
 
-`claude_desktop_config.json` dosyasına ekleyin:
+**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
