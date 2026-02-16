@@ -377,7 +377,7 @@ else:
 # 5. Build indexes
 _categories = {}
 for d in _all_docs:
-    _categories.setdefault(d["category"], []).append(d)
+    _categories.setdefault(d["category"].lower(), []).append(d)
 
 _doc_count = len(_all_docs)
 _by_id: dict[str, dict] = {}
