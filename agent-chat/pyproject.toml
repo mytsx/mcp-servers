@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-chat-mcp"
+version = "1.0.0"
+description = "Agent Chat Room MCP server - Allows multiple Claude Code agents to communicate with each other"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["mcp", "model-context-protocol", "agent", "chat", "multi-agent", "claude"]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+agent-chat-mcp = "agent_chat_mcp.__main__:run"
+
+[tool.setuptools]
+packages = ["agent_chat_mcp"]
+package-dir = {"" = "src"}

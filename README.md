@@ -124,12 +124,14 @@ pip install -e .
 |--------|-------------|----------|--------|---------------|
 | [**Git Extended MCP**](./mcp-server-git-extended) | Advanced Git operations and repository management | Python | ✅ Active | [README](./mcp-server-git-extended/README.md) |
 | [**Gemini Reviews MCP**](./gemini-reviews-mcp) | Gemini Code Assist PR review fetcher from GitHub | Python | ✅ Active | [README](./gemini-reviews-mcp/README.md) |
+| [**Agent Chat MCP**](./agent-chat) | Multi-agent chat room for Claude Code instances | Python | ✅ Active | [README](./agent-chat/README.md) |
 
 **Features:**
 - Advanced Git operations
 - PR review automation
 - Code quality analysis
 - Commit history analysis
+- Multi-agent communication
 
 ### Integrations & APIs
 
