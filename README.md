@@ -82,6 +82,15 @@ pip install -e .
     "gib-api": {
       "command": "npx",
       "args": ["-y", "gib-api-mcp"]
+    },
+    "my-chatbot": {
+      "command": "uvx",
+      "args": ["n8n-chatbot-mcp"],
+      "env": {
+        "N8N_CHATBOT_URL": "https://n8n.example.com/webhook/my-bot/chat",
+        "N8N_CHATBOT_NAME": "My Chatbot",
+        "N8N_CHATBOT_DESCRIPTION": "What this chatbot knows about"
+      }
     }
   }
 }
@@ -134,6 +143,7 @@ pip install -e .
 
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
+| [**n8n Chatbot MCP**](./n8n-chatbot-mcp) | Generic n8n Chat Trigger webhook as MCP tool | Python | ✅ Active | [README](./n8n-chatbot-mcp/README.md) |
 | [**GİB API MCP**](./gib-api-mcp) | Turkish Revenue Administration (GİB) API integration | Node.js | ✅ Active | [README](./gib-api-mcp/README.md) |
 
 ### Utilities
@@ -152,6 +162,7 @@ mcp-servers/
 ├── asger-terminal-mcp/          # Asger Terminal MCP (Node.js)
 ├── gemini-reviews-mcp/        # Gemini Reviews MCP (Python)
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
+├── n8n-chatbot-mcp/           # n8n Chat Trigger MCP (Python)
 ├── query_dashboard/           # Query monitoring dashboard
 └── README.md
 ```
