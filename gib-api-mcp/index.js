@@ -8,6 +8,7 @@ import {
 import fetch from 'node-fetch';
 
 const BASE_URL = process.env.GIB_API_URL;
+const API_KEY = process.env.GIB_API_KEY || '';
 
 if (!BASE_URL) {
   console.error(
@@ -81,7 +82,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 async function callGibApi(endpoint, params) {
   const response = await fetch(`${BASE_URL}${endpoint}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(API_KEY && { 'X-API-Key': API_KEY }),
+    },
     body: JSON.stringify(params)
   });
 

@@ -28,6 +28,7 @@ Bu MCP server'ı kullanmak için kendi GİB API proxy worker'ınızı deploy etm
 ```bash
 claude mcp add gib-api \
   -e GIB_API_URL="https://your-worker.your-account.workers.dev" \
+  -e GIB_API_KEY="your-api-key" \
   -- npx -y gib-api-mcp
 ```
 
@@ -168,6 +169,7 @@ npm install
 | Environment Variable | Required | Description |
 |---------------------|----------|-------------|
 | `GIB_API_URL` | Yes | Kendi Cloudflare Worker proxy URL'iniz. Deploy: [gib-gecikme-zammi-faizi](https://github.com/mytsx/gib-gecikme-zammi-faizi) |
+| `GIB_API_KEY` | No | Worker'da API key koruması aktifse, `X-API-Key` header'ı olarak gönderilir |
 
 ## Tools
 
