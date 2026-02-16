@@ -27,7 +27,11 @@ try:
     ACTIVITY_LOGGING_ENABLED = True
 except ImportError:
     ACTIVITY_LOGGING_ENABLED = False
-    def get_activity_logger(): return None
+    class _NullLogger:
+        """Stub logger that silently ignores all method calls"""
+        def __getattr__(self, name):
+            return lambda *a, **kw: None
+    def get_activity_logger(): return _NullLogger()
     def log_session_start(*a, **kw): pass
     def log_session_end(*a, **kw): pass
 
