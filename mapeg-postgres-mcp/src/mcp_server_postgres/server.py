@@ -6,7 +6,6 @@ Natural language queries to PostgreSQL database
 
 import asyncio
 import os
-import sys
 import logging
 import time
 from typing import Any, List, Dict
@@ -24,18 +23,7 @@ from mcp.types import (
 )
 from dotenv import load_dotenv
 
-# Optional logging support
-try:
-    import sys
-    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    sys.path.insert(0, parent_dir)
-    from shared_logger import direct_log_query_execution
-    LOGGING_ENABLED = True
-except ImportError:
-    LOGGING_ENABLED = False
-    def direct_log_query_execution(*args, **kwargs):
-        """Stub function when logging is not available"""
-        pass
+from .query_logger import direct_log_query_execution
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +43,8 @@ class PostgreSQLMCPServer:
         self.server = Server("postgresql-mcp-server")
         self.connection = None
         self.read_only = os.getenv("READ_ONLY", "").lower() in ("true", "1", "yes")
+        self.db_identifier = f"{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', '')}"
+        self.workspace_path = os.getcwd()
         if self.read_only:
             logger.info("Read-only mode enabled - write queries will be blocked")
         self.setup_handlers()
@@ -387,10 +377,12 @@ class PostgreSQLMCPServer:
                         status="success",
                         row_count=0,  # Will be logged by handle_sql_query too
                         error_message="",
-                        user_query=query
+                        user_query=query,
+                        db_identifier=self.db_identifier,
+                        workspace_path=self.workspace_path,
                     )
                     return result
-            
+
             if any(word in query_lower for word in ["kullanıcı", "user", "kullanıcılar", "users"]):
                 generated_sql = """
                     SELECT usename as username, usesuper as is_superuser, usecreatedb as can_create_db
@@ -402,16 +394,18 @@ class PostgreSQLMCPServer:
                 execution_time = (time.time() - start_time) * 1000
                 direct_log_query_execution(
                     server_type="postgresql",
-                    tool_name="natural_language_query", 
+                    tool_name="natural_language_query",
                     query_text=generated_sql.strip(),
                     execution_time_ms=execution_time,
                     status="success",
                     row_count=0,
                     error_message="",
-                    user_query=query
+                    user_query=query,
+                    db_identifier=self.db_identifier,
+                    workspace_path=self.workspace_path,
                 )
                 return result
-            
+
             if any(word in query_lower for word in ["şema", "schema", "schemas"]):
                 generated_sql = """
                     SELECT schema_name, schema_owner 
@@ -430,10 +424,12 @@ class PostgreSQLMCPServer:
                     status="success",
                     row_count=0,
                     error_message="",
-                    user_query=query
+                    user_query=query,
+                    db_identifier=self.db_identifier,
+                    workspace_path=self.workspace_path,
                 )
                 return result
-            
+
             if any(word in query_lower for word in ["istatistik", "statistics", "stats", "bilgi", "info"]):
                 generated_sql = """
                     SELECT 
@@ -452,10 +448,12 @@ class PostgreSQLMCPServer:
                     status="success",
                     row_count=0,
                     error_message="",
-                    user_query=query
+                    user_query=query,
+                    db_identifier=self.db_identifier,
+                    workspace_path=self.workspace_path,
                 )
                 return result
-            
+
             # If no pattern matches, return helpful message
             execution_time = (time.time() - start_time) * 1000
             direct_log_query_execution(
@@ -466,7 +464,9 @@ class PostgreSQLMCPServer:
                 status="success",
                 row_count=0,
                 error_message="",
-                user_query=query
+                user_query=query,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             
             return [TextContent(
@@ -500,7 +500,9 @@ Gelişmiş sorgular için:
                 status=status,
                 row_count=0,
                 error_message=error_message,
-                user_query=query
+                user_query=query,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             return [TextContent(type="text", text=f"❌ Error processing natural language query: {str(e)}")]
     
@@ -576,7 +578,9 @@ Gelişmiş sorgular için:
                 status=status,
                 row_count=row_count,
                 error_message=error_message,
-                response_text=result_text
+                response_text=result_text,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     

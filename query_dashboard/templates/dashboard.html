@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Query Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
-</script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -29,6 +28,32 @@
 
     <!-- Main Content -->
     <div class="container mx-auto p-6">
+        <!-- Filter Bar -->
+        <div class="bg-white rounded-lg shadow-md p-4 mb-6 flex flex-wrap items-center gap-4">
+            <div class="flex items-center gap-2">
+                <i class="fas fa-filter text-gray-500"></i>
+                <span class="text-sm font-medium text-gray-700">Filters:</span>
+            </div>
+            <div>
+                <select id="filter-server-type" class="text-sm border border-gray-300 rounded-md px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    <option value="">All Servers</option>
+                    <option value="postgresql">PostgreSQL</option>
+                    <option value="oracle">Oracle</option>
+                </select>
+            </div>
+            <div>
+                <select id="filter-db-identifier" class="text-sm border border-gray-300 rounded-md px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500">
+                    <option value="">All Databases</option>
+                </select>
+            </div>
+            <div>
+                <select id="filter-workspace" class="text-sm border border-gray-300 rounded-md px-3 py-1.5 focus:ring-blue-500 focus:border-blue-500 max-w-xs">
+                    <option value="">All Workspaces</option>
+                </select>
+            </div>
+            <button onclick="clearFilters()" class="text-sm text-blue-600 hover:text-blue-800 underline">Clear</button>
+        </div>
+
         <!-- Stats Cards -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             <div class="bg-white rounded-lg shadow-md p-6">
@@ -124,15 +149,68 @@
     </div>
 
     <script>
-        // Auto-refresh interval (5 seconds)
         let refreshInterval = null;
 
-        // Load initial dashboard data
+        function getFilterParams() {
+            const params = new URLSearchParams();
+            const st = document.getElementById('filter-server-type').value;
+            const db = document.getElementById('filter-db-identifier').value;
+            const ws = document.getElementById('filter-workspace').value;
+            if (st) params.set('server_type', st);
+            if (db) params.set('db_identifier', db);
+            if (ws) params.set('workspace_path', ws);
+            return params.toString();
+        }
+
+        function clearFilters() {
+            document.getElementById('filter-server-type').value = '';
+            document.getElementById('filter-db-identifier').value = '';
+            document.getElementById('filter-workspace').value = '';
+            loadDashboardData();
+        }
+
+        async function loadFilterOptions() {
+            try {
+                const resp = await fetch('/api/filters');
+                const data = await resp.json();
+
+                const dbSelect = document.getElementById('filter-db-identifier');
+                const wsSelect = document.getElementById('filter-workspace');
+
+                const currentDb = dbSelect.value;
+                const currentWs = wsSelect.value;
+
+                dbSelect.innerHTML = '<option value="">All Databases</option>';
+                data.db_identifiers.forEach(id => {
+                    const opt = document.createElement('option');
+                    opt.value = id;
+                    opt.textContent = id;
+                    if (id === currentDb) opt.selected = true;
+                    dbSelect.appendChild(opt);
+                });
+
+                wsSelect.innerHTML = '<option value="">All Workspaces</option>';
+                data.workspace_paths.forEach(path => {
+                    const opt = document.createElement('option');
+                    opt.value = path;
+                    // Show only last 2 path segments for readability
+                    const parts = path.split('/');
+                    opt.textContent = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : path;
+                    opt.title = path;
+                    if (path === currentWs) opt.selected = true;
+                    wsSelect.appendChild(opt);
+                });
+            } catch (error) {
+                console.error('Error loading filters:', error);
+            }
+        }
+
         async function loadDashboardData() {
             try {
+                const q = getFilterParams();
                 const [statsResponse, logsResponse] = await Promise.all([
-                    fetch('/api/stats'),
-                    fetch('/api/logs?limit=10')
+                    fetch('/api/stats' + (q ? '?' + q : '')),
+                    fetch('/api/logs?limit=10' + (q ? '&' + q : ''))
                 ]);
 
                 const stats = await statsResponse.json();
@@ -147,25 +225,13 @@
             }
         }
 
-        // Auto-refresh function
         function startAutoRefresh() {
-            // Clear existing interval
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-            }
-            
-            // Set new interval for 1 second
-            refreshInterval = setInterval(() => {
-                loadDashboardData();
-                console.log('Dashboard refreshed');
-            }, 1000);
+            if (refreshInterval) clearInterval(refreshInterval);
+            refreshInterval = setInterval(() => { loadDashboardData(); }, 1000);
         }
 
         function stopAutoRefresh() {
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-                refreshInterval = null;
-            }
+            if (refreshInterval) { clearInterval(refreshInterval); refreshInterval = null; }
         }
 
         function updateStatsCards(stats) {
@@ -185,12 +251,13 @@
             }
 
             logs.forEach(log => {
-                const statusIcon = log.status === 'success' ? 
-                    '<i class="fas fa-check-circle text-green-500"></i>' : 
+                const statusIcon = log.status === 'success' ?
+                    '<i class="fas fa-check-circle text-green-500"></i>' :
                     '<i class="fas fa-times-circle text-red-500"></i>';
-                
+
                 const timeAgo = getTimeAgo(log.timestamp);
                 const serverBadge = getServerBadge(log.server_type);
+                const dbBadge = log.db_identifier ? `<span class="px-1.5 py-0.5 text-xs bg-gray-100 text-gray-600 rounded" title="${log.db_identifier}">${truncateText(log.db_identifier, 30)}</span>` : '';
 
                 const item = document.createElement('div');
                 item.className = 'flex items-center justify-between p-3 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors';
@@ -200,11 +267,11 @@
                         ${statusIcon}
                         <div>
                             <p class="font-medium text-sm">${log.tool_name}</p>
-                            <p class="text-xs text-gray-600 font-mono bg-gray-50 p-1 rounded">${log.query_text}</p>
+                            <p class="text-xs text-gray-600 font-mono bg-gray-50 p-1 rounded">${truncateText(log.query_text, 100)}</p>
                         </div>
                     </div>
-                    <div class="text-right">
-                        ${serverBadge}
+                    <div class="text-right space-y-1">
+                        <div class="flex items-center gap-1 justify-end">${serverBadge} ${dbBadge}</div>
                         <p class="text-xs text-gray-500">${timeAgo}</p>
                     </div>
                 `;
@@ -249,7 +316,7 @@
                 'oracle': 'bg-red-100 text-red-800'
             };
             const color = colors[serverType] || 'bg-gray-100 text-gray-800';
-            return `<span class="px-2 py-1 text-xs font-medium rounded ${color}">${serverType.toUpperCase()}</span>`;
+            return `<span class="px-2 py-1 text-xs font-medium rounded ${color}">${(serverType || '').toUpperCase()}</span>`;
         }
 
         function getTimeAgo(timestamp) {
@@ -257,7 +324,7 @@
             const time = new Date(timestamp);
             const diffMs = now - time;
             const diffMins = Math.floor(diffMs / 60000);
-            
+
             if (diffMins < 1) return 'Just now';
             if (diffMins < 60) return `${diffMins}m ago`;
             if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
@@ -265,6 +332,7 @@
         }
 
         function truncateText(text, maxLength) {
+            if (!text) return '';
             if (text.length <= maxLength) return text;
             return text.substring(0, maxLength) + '...';
         }
@@ -310,6 +378,19 @@
                             <p class="mt-1 text-sm">#${log.id}</p>
                         </div>
                     </div>
+
+                    ${log.db_identifier ? `
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Database</label>
+                            <p class="mt-1 text-sm font-mono bg-gray-50 px-2 py-1 rounded">${log.db_identifier}</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700">Workspace</label>
+                            <p class="mt-1 text-sm font-mono bg-gray-50 px-2 py-1 rounded">${log.workspace_path || '-'}</p>
+                        </div>
+                    </div>
+                    ` : ''}
 
                     ${log.user_query ? `
                     <div>
@@ -367,100 +448,70 @@
             let headerLine = '';
             let dataLines = [];
             let inTable = false;
-            
+
             for (let i = 0; i < lines.length; i++) {
                 const line = lines[i];
-                
-                // Skip header lines with query info
-                if (line.includes('🔍') || line.includes('📊') || line.includes('===')) {
-                    continue;
-                }
-                
-                // Found table header (line with |)
+                if (line.includes('🔍') || line.includes('📊') || line.includes('===')) continue;
                 if (line.includes(' | ') && !headerLine && !line.includes('----')) {
                     headerLine = line.trim();
                     inTable = true;
                     continue;
                 }
-                
-                // Skip separator line
-                if (line.includes('----')) {
-                    continue;
-                }
-                
-                // Collect data rows
+                if (line.includes('----')) continue;
                 if (inTable && line.includes(' | ') && line.trim()) {
                     dataLines.push(line.trim());
                 }
             }
-            
-            // If we found a table, format it as HTML
+
             if (headerLine && dataLines.length > 0) {
                 const headers = headerLine.split(' | ').map(h => h.trim());
-                
                 let tableHtml = '<div class="overflow-x-auto"><table class="min-w-full text-xs border-collapse">';
-                
-                // Table header
                 tableHtml += '<thead class="bg-green-100"><tr>';
                 headers.forEach(header => {
                     tableHtml += `<th class="border border-green-300 px-2 py-1 text-left font-semibold">${header}</th>`;
                 });
-                tableHtml += '</tr></thead>';
-                
-                // Table body
-                tableHtml += '<tbody>';
+                tableHtml += '</tr></thead><tbody>';
                 dataLines.forEach((line, index) => {
                     const cells = line.split(' | ').map(c => c.trim());
-                    const expectedCols = headers.length;
                     const rowClass = index % 2 === 0 ? 'bg-white' : 'bg-green-25';
-                    
                     tableHtml += `<tr class="${rowClass}">`;
-                    
-                    // Fill cells
-                    for (let i = 0; i < expectedCols; i++) {
-                        let cellContent = cells[i] || '';
-                        tableHtml += `<td class="border border-green-200 px-2 py-1">${cellContent}</td>`;
+                    for (let i = 0; i < headers.length; i++) {
+                        tableHtml += `<td class="border border-green-200 px-2 py-1">${cells[i] || ''}</td>`;
                     }
-                    
                     tableHtml += '</tr>';
                 });
                 tableHtml += '</tbody></table></div>';
-                
                 return tableHtml;
             }
-            
-            // Fallback to pre-formatted text
+
             return `<pre class="text-xs font-mono text-green-800 whitespace-pre-wrap overflow-x-auto">${responseText}</pre>`;
         }
 
-        // Initialize dashboard
+        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+            loadFilterOptions();
             loadDashboardData();
             startAutoRefresh();
-            
-            // Stop refresh when page is hidden, start when visible
+
+            // Refresh filters every 10 seconds
+            setInterval(loadFilterOptions, 10000);
+
+            // Re-fetch on filter change
+            document.getElementById('filter-server-type').addEventListener('change', loadDashboardData);
+            document.getElementById('filter-db-identifier').addEventListener('change', loadDashboardData);
+            document.getElementById('filter-workspace').addEventListener('change', loadDashboardData);
+
             document.addEventListener('visibilitychange', function() {
-                if (document.hidden) {
-                    stopAutoRefresh();
-                } else {
-                    startAutoRefresh();
-                }
+                if (document.hidden) stopAutoRefresh();
+                else startAutoRefresh();
             });
 
-            // Close modal on ESC
             document.addEventListener('keydown', function(e) {
-                if (e.key === 'Escape') {
-                    closeModal();
-                }
+                if (e.key === 'Escape') closeModal();
             });
 
-            // Close modal on background click
             document.getElementById('query-modal').addEventListener('click', function(e) {
-                // Close if clicked on backdrop (not inside modal content)
-                const modalContent = e.target.closest('.bg-white.rounded-lg');
-                if (!modalContent) {
-                    closeModal();
-                }
+                if (!e.target.closest('.bg-white.rounded-lg')) closeModal();
             });
         });
     </script>

@@ -6,7 +6,6 @@ Natural language queries to Oracle database
 
 import asyncio
 import os
-import sys
 import logging
 import time
 from typing import Any, List, Dict
@@ -23,18 +22,7 @@ from mcp.types import (
 )
 from dotenv import load_dotenv
 
-# Optional logging support
-try:
-    import sys
-    parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-    sys.path.insert(0, parent_dir)
-    from shared_logger import direct_log_query_execution
-    LOGGING_ENABLED = True
-except ImportError:
-    LOGGING_ENABLED = False
-    def direct_log_query_execution(*args, **kwargs):
-        """Stub function when logging is not available"""
-        pass
+from .query_logger import direct_log_query_execution
 
 # Load environment variables
 load_dotenv()
@@ -58,6 +46,8 @@ class OracleMCPServer:
         self.dbms_output_enabled = False
         self.last_dbms_output_check = 0
         self.dbms_output_check_interval = 60  # Check every 60 seconds
+        self.db_identifier = ""
+        self.workspace_path = os.getcwd()
         if self.read_only:
             logger.info("Read-only mode enabled - write queries will be blocked")
         self.setup_handlers()
@@ -465,6 +455,7 @@ class OracleMCPServer:
                 raise ValueError("Invalid connection string format")
             
             self.connection = oracledb.connect(user=user_id, password=password, dsn=data_source)
+            self.db_identifier = data_source
             logger.info("Successfully connected to Oracle database")
 
             # Detect Oracle version dynamically
@@ -806,10 +797,12 @@ class OracleMCPServer:
                 status=status,
                 row_count=row_count,
                 error_message=error_message,
-                response_text=result_text
+                response_text=result_text,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
-    
+
     async def handle_describe_table(self, table_name: str) -> List[TextContent]:
         """Describe table structure"""
         cursor = self.connection.cursor()
@@ -932,7 +925,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=0,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -982,7 +977,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=0,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1034,7 +1031,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1088,7 +1087,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1156,7 +1157,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1242,7 +1245,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1308,7 +1313,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=0,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1408,7 +1415,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
     
@@ -1466,7 +1475,9 @@ class OracleMCPServer:
                 execution_time_ms=execution_time,
                 status=status,
                 row_count=row_count,
-                error_message=error_message
+                error_message=error_message,
+                db_identifier=self.db_identifier,
+                workspace_path=self.workspace_path,
             )
             cursor.close()
 

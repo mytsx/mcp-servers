@@ -140,7 +140,6 @@ pip install -e .
 
 | Component | Description | Language | Purpose |
 |-----------|-------------|----------|---------|
-| [**Shared Logger**](./shared_logger.py) | Centralized logging system | Python | Query logging |
 | [**Query Dashboard**](./query_dashboard) | Web-based query monitoring | Python | Monitoring |
 
 ## 🏗️ Repository Structure
@@ -154,7 +153,6 @@ mcp-servers/
 ├── gemini-reviews-mcp/        # Gemini Reviews MCP (Python)
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
 ├── query_dashboard/           # Query monitoring dashboard
-├── shared_logger.py           # Shared logging module
 └── README.md
 ```
 
@@ -332,31 +330,11 @@ python server.py
 - Check user has database access
 - Review `.env` file configuration
 
-## 📝 Shared Utilities
+## 📝 Query Logging
 
-### Centralized Query Logger
+Each MCP server includes a built-in `query_logger` module that writes to a shared SQLite database at `~/.local/share/mapeg-mcp/query_logs.db`. Logs include `db_identifier` (which database) and `workspace_path` (which project) for multi-instance filtering.
 
-All servers use a shared logging system:
-
-```python
-from shared_logger import log_query_execution
-
-log_query_execution(
-    server_type="postgresql",
-    tool_name="execute_sql",
-    query_text="SELECT * FROM users",
-    execution_time_ms=45.2,
-    status="success",
-    row_count=10
-)
-```
-
-**Benefits:**
-- Unified logging across all servers
-- SQLite-based storage
-- Real-time notifications
-- Performance metrics
-- Error tracking
+The **Query Dashboard** reads this database directly and supports filtering by server type, database, and workspace.
 
 ## 🗺️ Roadmap
 
