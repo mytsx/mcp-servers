@@ -155,7 +155,6 @@ mcp-servers/
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
 ├── query_dashboard/           # Query monitoring dashboard
 ├── shared_logger.py           # Shared logging module
-├── kill_all_mcp_servers.sh   # Utility script
 └── README.md
 ```
 
@@ -358,13 +357,6 @@ log_query_execution(
 - Real-time notifications
 - Performance metrics
 - Error tracking
-
-### Utility Scripts
-
-**Kill All MCP Servers**
-```bash
-./kill_all_mcp_servers.sh
-```
 
 ## 🗺️ Roadmap
 
