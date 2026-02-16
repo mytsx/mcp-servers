@@ -6,13 +6,14 @@ Oracle 19c veritabanınızı Claude Desktop ile doğal dilde sorgulayın.
 
 ## Features / Özellikler
 
-- ✅ Oracle 19c full support / Tam desteği
+- ✅ Oracle multi-version support (11g, 12c, 18c, 19c, 21c, 23ai) / Çoklu versiyon desteği
 - ✅ Natural language queries (Turkish/English) / Doğal dil sorguları
 - ✅ Execute Oracle SQL / SQL sorgu çalıştırma
 - ✅ Database schema exploration / Tablo yapısını görüntüleme
 - ✅ Database statistics / Veritabanı istatistikleri
 - ✅ Smart query suggestions / Akıllı sorgu önerileri
 - ✅ Secure connection via environment variables / Güvenli bağlantı
+- ✅ Dynamic version detection / Dinamik versiyon tespiti
 - ✅ Oracle thin mode (no Instant Client required) / Instant Client gerektirmez
 
 ## Installation / Kurulum
@@ -76,6 +77,7 @@ Alternatively, create a `.env` file:
 
 ```env
 ORACLE_CONNECTION_STRING=User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))
+READ_ONLY=true  # Optional: Block write operations (INSERT, UPDATE, DELETE, DROP, etc.)
 ```
 
 ## 🛠️ Kullanım
@@ -91,7 +93,7 @@ Claude Desktop'ı yeniden başlattıktan sonra şu şekilde kullanabilirsiniz:
 ### 🔧 Araçlar:
 
 #### 1. **natural_language_query**
-Oracle 19c için optimize edilmiş doğal dil sorgulama
+Oracle için optimize edilmiş doğal dil sorgulama
 ```
 Örnek: "MADEN kullanıcısının tablolarını göster"
 ```
@@ -122,7 +124,7 @@ AI destekli akıllı Oracle sorgulama
 - **oracle://schema**: USER_TAB_COLUMNS'dan şema bilgisi
 - **oracle://stats**: V$INSTANCE'dan veritabanı istatistikleri
 
-## 🔍 Oracle 19c Özellikleri
+## 🔍 Oracle Özellikleri
 
 ### Desteklenen Oracle View'ları:
 - `USER_TABLES` - Kullanıcı tabloları
@@ -132,7 +134,7 @@ AI destekli akıllı Oracle sorgulama
 - `ALL_USERS` - Veritabanı kullanıcıları
 
 ### SQL Özellikleri:
-- `FETCH FIRST n ROWS ONLY` - Oracle 19c syntax
+- `FETCH FIRST n ROWS ONLY` - Oracle 12c+ syntax
 - `ROWNUM` - Klasik Oracle limitleme
 - Büyük/küçük harf duyarlılığı (tablo isimleri BÜYÜK HARF)
 
@@ -149,7 +151,7 @@ conn = oracledb.connect(
     password='MADEN',
     dsn='(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=10.50.53.15)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=madendev)))'
 )
-print('✅ Oracle 19c bağlantısı başarılı!')
+print('✅ Oracle bağlantısı başarılı!')
 conn.close()
 "
 ```
@@ -176,7 +178,7 @@ python server.py
 ```
 
 ### 3. Version Uyumsuzluğu:
-- Oracle 19c thin mode kullanılır
+- Oracle thin mode kullanılır (versiyon otomatik tespit edilir)
 - Eski Oracle sürümleri için Instant Client gerekebilir
 
 ## 🔒 Güvenlik
@@ -195,4 +197,4 @@ Gelişmiş AI özellikleri için:
 
 ---
 
-**Not:** Bu MCP server Oracle 19c için optimize edilmiştir. PostgreSQL versiyonu için `postgresql-mcp-server` klasörüne bakın.
+**Not:** Bu MCP server Oracle veritabanları için optimize edilmiştir (versiyon otomatik tespit edilir). PostgreSQL versiyonu için `postgresql-mcp-server` klasörüne bakın.

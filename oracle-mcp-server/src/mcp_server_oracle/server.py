@@ -44,14 +44,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class OracleMCPServer:
+    # Keywords that indicate a write/modify operation
+    WRITE_KEYWORDS = frozenset([
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+        "TRUNCATE", "MERGE", "GRANT", "REVOKE",
+    ])
+
     def __init__(self):
         self.server = Server("oracle-mcp-server")
         self.connection = None
-        self.oracle_version = "Oracle 19c"
-        # Note: Using thin mode for Oracle 19c compatibility
+        self.oracle_version = "Oracle"
+        self.read_only = os.getenv("READ_ONLY", "").lower() in ("true", "1", "yes")
         self.dbms_output_enabled = False
         self.last_dbms_output_check = 0
         self.dbms_output_check_interval = 60  # Check every 60 seconds
+        if self.read_only:
+            logger.info("Read-only mode enabled - write queries will be blocked")
         self.setup_handlers()
         
     def setup_handlers(self):
@@ -64,19 +72,19 @@ class OracleMCPServer:
                 Resource(
                     uri="oracle://tables",
                     name="Database Tables",
-                    description="List all tables in the Oracle 19c database using USER_TABLES view",
+                    description=f"List all tables in the {self.oracle_version} database using USER_TABLES view",
                     mimeType="application/json"
                 ),
                 Resource(
                     uri="oracle://schema",
                     name="Database Schema",
-                    description="Get Oracle 19c database schema information from USER_TAB_COLUMNS",
+                    description=f"Get {self.oracle_version} database schema information from USER_TAB_COLUMNS",
                     mimeType="application/json"
                 ),
                 Resource(
                     uri="oracle://stats",
                     name="Database Statistics",
-                    description="Get Oracle 19c database statistics and version info",
+                    description=f"Get {self.oracle_version} database statistics and version info",
                     mimeType="application/json"
                 )
             ]
@@ -105,7 +113,7 @@ class OracleMCPServer:
                 """)
                 tables = [row[0] for row in cursor.fetchall()]
                 
-                schema_info = "Oracle 19c Database Schema:\n\n"
+                schema_info = f"{self.oracle_version} Database Schema:\n\n"
                 for table in tables[:10]:  # Limit to first 10 tables
                     cursor.execute(f"""
                         SELECT column_name, data_type, nullable, data_default
@@ -147,7 +155,7 @@ class OracleMCPServer:
                 """)
                 size_info = cursor.fetchone()
                 
-                result = f"Oracle 19c Database Information:\n\n"
+                result = f"{self.oracle_version} Database Information:\n\n"
                 result += f"• Database: {info[0]}\n"
                 result += f"• Current User: {info[1]}\n"
                 result += f"• Oracle Version: {info[2]}\n"
@@ -167,7 +175,7 @@ class OracleMCPServer:
             return [
                 Tool(
                     name="execute_sql",
-                    description="Execute direct SQL query on Oracle 19c database. Use Oracle-specific views like USER_TABLES, ALL_TABLES, DBA_TABLES, USER_TAB_COLUMNS, etc.",
+                    description=f"Execute direct SQL query on {self.oracle_version} database. Use Oracle-specific views like USER_TABLES, ALL_TABLES, DBA_TABLES, USER_TAB_COLUMNS, etc.",
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -359,9 +367,29 @@ class OracleMCPServer:
                         },
                         "required": ["object_type"]
                     }
+                ),
+                Tool(
+                    name="explain_plan",
+                    description="Show the execution plan for a SQL query using EXPLAIN PLAN and DBMS_XPLAN",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "sql": {
+                                "type": "string",
+                                "description": "SQL query to explain"
+                            },
+                            "format": {
+                                "type": "string",
+                                "enum": ["typical", "basic", "all"],
+                                "description": "Level of detail: basic, typical (default), or all",
+                                "default": "typical"
+                            }
+                        },
+                        "required": ["sql"]
+                    }
                 )
             ]
-        
+
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             """Handle tool calls"""
@@ -401,7 +429,10 @@ class OracleMCPServer:
                 
                 elif name == "list_database_objects":
                     return await self.handle_list_database_objects(arguments["object_type"], arguments.get("pattern"), arguments.get("limit", 100))
-                
+
+                elif name == "explain_plan":
+                    return await self.handle_explain_plan(arguments["sql"], arguments.get("format", "typical"))
+
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
                     
@@ -435,7 +466,10 @@ class OracleMCPServer:
             
             self.connection = oracledb.connect(user=user_id, password=password, dsn=data_source)
             logger.info("Successfully connected to Oracle database")
-            
+
+            # Detect Oracle version dynamically
+            self._detect_oracle_version()
+
             # Enable DBMS_OUTPUT for this session
             self.enable_dbms_output()
             logger.info("DBMS_OUTPUT enabled for session")
@@ -444,6 +478,55 @@ class OracleMCPServer:
             logger.error(f"Failed to connect to Oracle: {e}")
             raise
     
+    def _is_write_query(self, sql: str) -> bool:
+        """Check if a SQL query is a write/modify operation"""
+        cleaned = sql.strip()
+        # Strip leading comments
+        while cleaned.startswith("--") or cleaned.startswith("/*"):
+            if cleaned.startswith("--"):
+                cleaned = cleaned.split("\n", 1)[-1].strip()
+            elif cleaned.startswith("/*"):
+                end = cleaned.find("*/")
+                cleaned = cleaned[end + 2:].strip() if end != -1 else cleaned
+        first_word = cleaned.split()[0].upper() if cleaned.split() else ""
+        return first_word in self.WRITE_KEYWORDS
+
+    def _detect_oracle_version(self):
+        """Detect Oracle version from V$INSTANCE"""
+        version_suffix_map = {
+            "19": "19c", "18": "18c", "12": "12c", "11": "11g",
+            "10": "10g", "21": "21c", "23": "23ai",
+        }
+        try:
+            cursor = self.connection.cursor()
+            # Try version_full first (Oracle 18c+)
+            try:
+                cursor.execute("SELECT version_full FROM v$instance")
+                row = cursor.fetchone()
+                if row and row[0]:
+                    full_ver = row[0]
+                    major = full_ver.split('.')[0]
+                    suffix = version_suffix_map.get(major, major)
+                    self.oracle_version = f"Oracle {suffix}"
+                    logger.info(f"Detected Oracle version: {self.oracle_version} (full: {full_ver})")
+                    cursor.close()
+                    return
+            except oracledb.DatabaseError:
+                pass  # version_full not available (pre-18c)
+
+            # Fallback to version column
+            cursor.execute("SELECT version FROM v$instance")
+            row = cursor.fetchone()
+            if row and row[0]:
+                ver = row[0]
+                major = ver.split('.')[0]
+                suffix = version_suffix_map.get(major, major)
+                self.oracle_version = f"Oracle {suffix}"
+                logger.info(f"Detected Oracle version: {self.oracle_version} (version: {ver})")
+            cursor.close()
+        except Exception as e:
+            logger.warning(f"Could not detect Oracle version, using default: {e}")
+
     def _extract_response_text(self, result: List[TextContent]) -> str:
         """Extract first 500 chars of response for logging"""
         if result and hasattr(result[0], 'text'):
@@ -597,9 +680,13 @@ class OracleMCPServer:
             return ""
 
     async def handle_sql_query(self, sql: str, limit: int = 100) -> List[TextContent]:
-        """Execute SQL query on Oracle 19c"""
+        """Execute SQL query on Oracle database"""
+        # Read-only guard
+        if self.read_only and self._is_write_query(sql):
+            return [TextContent(type="text", text="❌ Read-only mode is enabled. Write operations (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, MERGE, GRANT, REVOKE) are blocked. Set READ_ONLY=false to allow write operations.")]
+
         start_time = time.time()
-        
+
         # If query contains DBMS_OUTPUT.PUT_LINE, force check DBMS_OUTPUT status
         if 'DBMS_OUTPUT.PUT_LINE' in sql.upper():
             logger.info("DBMS_OUTPUT.PUT_LINE detected in query, forcing DBMS_OUTPUT check")
@@ -1382,7 +1469,43 @@ class OracleMCPServer:
                 error_message=error_message
             )
             cursor.close()
-    
+
+    async def handle_explain_plan(self, sql: str, fmt: str = "typical") -> List[TextContent]:
+        """Show execution plan for a SQL query using EXPLAIN PLAN and DBMS_XPLAN"""
+        import uuid
+        statement_id = f"mcp_{uuid.uuid4().hex[:8]}"
+        cursor = self.connection.cursor()
+        try:
+            # Generate the explain plan
+            cursor.execute(f"EXPLAIN PLAN SET STATEMENT_ID = '{statement_id}' FOR {sql}")
+
+            # Retrieve the plan using DBMS_XPLAN
+            cursor.execute(f"""
+                SELECT plan_table_output
+                FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', '{statement_id}', '{fmt.upper()}'))
+            """)
+            rows = cursor.fetchall()
+            plan_output = "\n".join(row[0] for row in rows)
+
+            # Clean up plan table entry
+            cursor.execute(f"DELETE FROM PLAN_TABLE WHERE statement_id = '{statement_id}'")
+            self.connection.commit()
+
+            result = f"📋 Execution Plan (format: {fmt}):\n"
+            result += "=" * 60 + "\n"
+            result += plan_output
+            return [TextContent(type="text", text=result)]
+        except Exception as e:
+            # Try to clean up even on error
+            try:
+                cursor.execute(f"DELETE FROM PLAN_TABLE WHERE statement_id = '{statement_id}'")
+                self.connection.commit()
+            except Exception:
+                pass
+            return [TextContent(type="text", text=f"❌ EXPLAIN PLAN error: {str(e)}")]
+        finally:
+            cursor.close()
+
 
 async def main():
     """Main function to run the MCP server"""

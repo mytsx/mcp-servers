@@ -274,6 +274,49 @@ class SSHMCPServer:
                             }
                         }
                     }
+                ),
+                Tool(
+                    name="sftp_download",
+                    description="Download a file from the remote server via SFTP",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "remote_path": {
+                                "type": "string",
+                                "description": "Full path of the file on the remote server"
+                            },
+                            "encoding": {
+                                "type": "string",
+                                "description": "Text encoding to use (default: utf-8). Use 'base64' for binary files.",
+                                "default": "utf-8"
+                            }
+                        },
+                        "required": ["remote_path"]
+                    }
+                ),
+                Tool(
+                    name="sftp_upload",
+                    description="Upload content to a file on the remote server via SFTP",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "remote_path": {
+                                "type": "string",
+                                "description": "Full path of the file on the remote server"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write to the file"
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["overwrite", "append"],
+                                "description": "Write mode: overwrite (default) or append",
+                                "default": "overwrite"
+                            }
+                        },
+                        "required": ["remote_path", "content"]
+                    }
                 )
             ]
         
@@ -298,7 +341,13 @@ class SSHMCPServer:
                 
                 elif name == "ssh_reconnect":
                     return await self.handle_ssh_reconnect(arguments)
-                
+
+                elif name == "sftp_download":
+                    return await self.handle_sftp_download(arguments)
+
+                elif name == "sftp_upload":
+                    return await self.handle_sftp_upload(arguments)
+
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
                     
@@ -368,6 +417,8 @@ class SSHMCPServer:
                 "port": port,
                 "username": os.getenv("SSH_USER", "root"),
                 "password": os.getenv("SSH_PASSWORD", ""),
+                "key_file": os.getenv("SSH_KEY_FILE", ""),
+                "key_passphrase": os.getenv("SSH_KEY_PASSPHRASE", ""),
                 "timeout": timeout,
                 "keepalive_interval": keepalive_interval,
                 "keepalive_count_max": keepalive_count_max,
@@ -429,28 +480,42 @@ class SSHMCPServer:
             port = params["port"]
             username = params["username"]
             password = params["password"]
+            key_file = params["key_file"]
+            key_passphrase = params["key_passphrase"] or None
             timeout = params["timeout"]
             keepalive_interval = params["keepalive_interval"]
             banner_timeout = params["banner_timeout"]
             auth_timeout = params["auth_timeout"]
-            
+
             self.ssh_client = paramiko.SSHClient()
             # Load system host keys for security
             self.ssh_client.load_system_host_keys()
-            # Use WarningPolicy instead of AutoAddPolicy for better security
-            # This will warn about unknown hosts but still allow connection
-            # For production, consider using RejectPolicy with proper known_hosts management
             self.ssh_client.set_missing_host_key_policy(paramiko.WarningPolicy())
-            
-            self.ssh_client.connect(
-                hostname=host,
-                port=port,
-                username=username,
-                password=password,
-                timeout=timeout,
-                banner_timeout=banner_timeout,
-                auth_timeout=auth_timeout
-            )
+
+            connect_kwargs = {
+                "hostname": host,
+                "port": port,
+                "username": username,
+                "timeout": timeout,
+                "banner_timeout": banner_timeout,
+                "auth_timeout": auth_timeout,
+            }
+
+            if key_file:
+                # SSH key file authentication
+                connect_kwargs["key_filename"] = key_file
+                if key_passphrase:
+                    connect_kwargs["passphrase"] = key_passphrase
+                logger.info(f"Using SSH key authentication: {key_file}")
+            elif password:
+                # Password authentication
+                connect_kwargs["password"] = password
+                logger.info("Using SSH password authentication")
+            else:
+                # Default: let paramiko try default keys (~/.ssh/id_rsa etc.) and SSH agent
+                logger.info("Using default SSH key lookup and SSH agent")
+
+            self.ssh_client.connect(**connect_kwargs)
             
             # Enable keepalive to prevent connection timeout
             transport = self.ssh_client.get_transport()
@@ -919,6 +984,86 @@ class SSHMCPServer:
             
         except Exception as e:
             return [TextContent(type="text", text=f"❌ Process manager error: {str(e)}")]
+
+    async def handle_sftp_download(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Download a file from remote server via SFTP"""
+        remote_path = arguments["remote_path"]
+        encoding = arguments.get("encoding", "utf-8")
+        start_time = time.time()
+
+        try:
+            await self.ensure_connection()
+            with self.ssh_client.open_sftp() as sftp:
+                with sftp.open(remote_path, 'rb') as f:
+                    data = f.read()
+
+            if encoding == "base64":
+                import base64
+                content = base64.b64encode(data).decode("ascii")
+                result = f"📥 Downloaded (base64): {remote_path}\nSize: {len(data)} bytes\n\n{content}"
+            else:
+                content = data.decode(encoding, errors='replace')
+                result = f"📥 Downloaded: {remote_path}\nSize: {len(data)} bytes\n\n{content}"
+
+            execution_time = (time.time() - start_time) * 1000
+            self.activity_logger.log_file_operation(
+                operation="sftp_download", path=remote_path, arguments=arguments,
+                response=f"Downloaded {len(data)} bytes", execution_time=execution_time,
+                status="success", error_message=None
+            )
+            return [TextContent(type="text", text=result)]
+
+        except Exception as e:
+            execution_time = (time.time() - start_time) * 1000
+            self.activity_logger.log_file_operation(
+                operation="sftp_download", path=remote_path, arguments=arguments,
+                response=str(e), execution_time=execution_time,
+                status="error", error_message=str(e)
+            )
+            return [TextContent(type="text", text=f"❌ SFTP download error: {str(e)}")]
+
+    async def handle_sftp_upload(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Upload content to a file on remote server via SFTP"""
+        remote_path = arguments["remote_path"]
+        content = arguments["content"]
+        mode = arguments.get("mode", "overwrite")
+        start_time = time.time()
+
+        try:
+            await self.ensure_connection()
+            with self.ssh_client.open_sftp() as sftp:
+                if mode == "append":
+                    # Read existing content first, then append
+                    try:
+                        with sftp.open(remote_path, 'r') as f:
+                            existing = f.read().decode('utf-8', errors='replace')
+                    except FileNotFoundError:
+                        existing = ""
+                    with sftp.open(remote_path, 'w') as f:
+                        f.write(existing + content)
+                else:
+                    with sftp.open(remote_path, 'w') as f:
+                        f.write(content)
+
+            size = len(content.encode('utf-8'))
+            result = f"📤 Uploaded: {remote_path}\nMode: {mode}\nSize: {size} bytes"
+
+            execution_time = (time.time() - start_time) * 1000
+            self.activity_logger.log_file_operation(
+                operation="sftp_upload", path=remote_path, arguments={**arguments, "content": f"<{size} bytes>"},
+                response=f"Uploaded {size} bytes", execution_time=execution_time,
+                status="success", error_message=None
+            )
+            return [TextContent(type="text", text=result)]
+
+        except Exception as e:
+            execution_time = (time.time() - start_time) * 1000
+            self.activity_logger.log_file_operation(
+                operation="sftp_upload", path=remote_path, arguments={**arguments, "content": "<redacted>"},
+                response=str(e), execution_time=execution_time,
+                status="error", error_message=str(e)
+            )
+            return [TextContent(type="text", text=f"❌ SFTP upload error: {str(e)}")]
 
 async def main():
     """Main function to run the MCP server"""

@@ -45,9 +45,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class PostgreSQLMCPServer:
+    # Keywords that indicate a write/modify operation
+    WRITE_KEYWORDS = frozenset([
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+        "TRUNCATE", "MERGE", "GRANT", "REVOKE",
+    ])
+
     def __init__(self):
         self.server = Server("postgresql-mcp-server")
         self.connection = None
+        self.read_only = os.getenv("READ_ONLY", "").lower() in ("true", "1", "yes")
+        if self.read_only:
+            logger.info("Read-only mode enabled - write queries will be blocked")
         self.setup_handlers()
         
     def setup_handlers(self):
@@ -245,6 +254,36 @@ class PostgreSQLMCPServer:
                         },
                         "required": ["question"]
                     }
+                ),
+                Tool(
+                    name="explain_query",
+                    description="Show the execution plan for a SQL query using EXPLAIN",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "sql": {
+                                "type": "string",
+                                "description": "SQL query to explain"
+                            },
+                            "analyze": {
+                                "type": "boolean",
+                                "description": "Actually execute the query to get real timing (default: false - safe/estimated only)",
+                                "default": False
+                            },
+                            "format": {
+                                "type": "string",
+                                "enum": ["text", "json", "yaml"],
+                                "description": "Output format (default: text)",
+                                "default": "text"
+                            },
+                            "buffers": {
+                                "type": "boolean",
+                                "description": "Include buffer usage information (only with analyze=true)",
+                                "default": False
+                            }
+                        },
+                        "required": ["sql"]
+                    }
                 )
             ]
         
@@ -266,7 +305,15 @@ class PostgreSQLMCPServer:
                 
                 elif name == "smart_query":
                     return await self.handle_smart_query(arguments["question"])
-                
+
+                elif name == "explain_query":
+                    return await self.handle_explain_query(
+                        arguments["sql"],
+                        arguments.get("analyze", False),
+                        arguments.get("format", "text"),
+                        arguments.get("buffers", False)
+                    )
+
                 else:
                     return [TextContent(type="text", text=f"Unknown tool: {name}")]
                     
@@ -274,6 +321,19 @@ class PostgreSQLMCPServer:
                 logger.error(f"Error in tool call: {e}")
                 return [TextContent(type="text", text=f"Error: {str(e)}")]
     
+    def _is_write_query(self, sql: str) -> bool:
+        """Check if a SQL query is a write/modify operation"""
+        cleaned = sql.strip()
+        # Strip leading comments
+        while cleaned.startswith("--") or cleaned.startswith("/*"):
+            if cleaned.startswith("--"):
+                cleaned = cleaned.split("\n", 1)[-1].strip()
+            elif cleaned.startswith("/*"):
+                end = cleaned.find("*/")
+                cleaned = cleaned[end + 2:].strip() if end != -1 else cleaned
+        first_word = cleaned.split()[0].upper() if cleaned.split() else ""
+        return first_word in self.WRITE_KEYWORDS
+
     async def connect_to_postgresql(self):
         """Connect to PostgreSQL database"""
         try:
@@ -446,6 +506,10 @@ Gelişmiş sorgular için:
     
     async def handle_sql_query(self, sql: str, limit: int = 100) -> List[TextContent]:
         """Execute SQL query"""
+        # Read-only guard
+        if self.read_only and self._is_write_query(sql):
+            return [TextContent(type="text", text="❌ Read-only mode is enabled. Write operations (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, MERGE, GRANT, REVOKE) are blocked. Set READ_ONLY=false to allow write operations.")]
+
         start_time = time.time()
         cursor = self.connection.cursor(cursor_factory=RealDictCursor)
         row_count = 0
@@ -624,6 +688,36 @@ Gelişmiş sorgular için:
             
         except Exception as e:
             return [TextContent(type="text", text=f"❌ Smart query error: {str(e)}")]
+
+    async def handle_explain_query(self, sql: str, analyze: bool = False, fmt: str = "text", buffers: bool = False) -> List[TextContent]:
+        """Show execution plan for a SQL query"""
+        cursor = self.connection.cursor()
+        try:
+            parts = ["EXPLAIN"]
+            options = []
+            if analyze:
+                options.append("ANALYZE true")
+            if buffers and analyze:
+                options.append("BUFFERS true")
+            if fmt != "text":
+                options.append(f"FORMAT {fmt}")
+            if options:
+                parts.append(f"({', '.join(options)})")
+            parts.append(sql)
+            explain_sql = " ".join(parts)
+
+            cursor.execute(explain_sql)
+            rows = cursor.fetchall()
+
+            plan_output = "\n".join(row[0] if isinstance(row[0], str) else str(row[0]) for row in rows)
+            result = f"📋 Execution Plan{' (ANALYZE)' if analyze else ''}:\n"
+            result += "=" * 60 + "\n"
+            result += plan_output
+            return [TextContent(type="text", text=result)]
+        except Exception as e:
+            return [TextContent(type="text", text=f"❌ EXPLAIN error: {str(e)}")]
+        finally:
+            cursor.close()
 
 async def main():
     """Main function to run the MCP server"""

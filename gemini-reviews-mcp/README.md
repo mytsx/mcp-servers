@@ -24,7 +24,7 @@ No installation required! Just configure Claude Desktop:
   "mcpServers": {
     "gemini-pr-reviews": {
       "command": "uvx",
-      "args": ["mcp-gemini-pr-reviews"],
+      "args": ["gemini-reviews-mcp"],
       "env": {
         "GITHUB_TOKEN": "ghp_your_token_here"
       }
@@ -36,13 +36,13 @@ No installation required! Just configure Claude Desktop:
 ### Option 2: Install from PyPI
 
 ```bash
-pip install mcp-gemini-pr-reviews
+pip install gemini-reviews-mcp
 ```
 
 ### Option 3: Install from Source
 
 ```bash
-cd gh-tool
+cd gemini-reviews-mcp
 pip install -e .
 # or
 ./install.sh
@@ -71,7 +71,7 @@ GITHUB_TOKEN=your_actual_github_token_here
   "mcpServers": {
     "gemini-pr-reviews": {
       "command": "uvx",
-      "args": ["mcp-gemini-pr-reviews"],
+      "args": ["gemini-reviews-mcp"],
       "env": {
         "GITHUB_TOKEN": "ghp_your_token_here"
       }

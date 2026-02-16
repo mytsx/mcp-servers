@@ -87,6 +87,7 @@ DB_PORT=5432
 DB_NAME=mydb
 DB_USER=postgres
 DB_PASSWORD=secret
+READ_ONLY=true  # Optional: Block write operations (INSERT, UPDATE, DELETE, DROP, etc.)
 ```
 
 ## Kullanım

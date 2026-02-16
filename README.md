@@ -72,9 +72,9 @@ pip install -e .
         "TERMINAL_URL": "https://your-web-terminal-url"
       }
     },
-    "gemini-pr-reviews": {
+    "gemini-reviews": {
       "command": "uvx",
-      "args": ["mcp-gemini-pr-reviews"],
+      "args": ["gemini-reviews-mcp"],
       "env": {
         "GITHUB_TOKEN": "ghp_your_token"
       }
@@ -94,7 +94,7 @@ pip install -e .
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
 | [**PostgreSQL MCP**](./postgresql-mcp-server) | Full-featured PostgreSQL database integration with natural language queries | Python | ✅ Active | [README](./postgresql-mcp-server/README.md) |
-| [**Oracle MCP**](./oracle-mcp-server) | Oracle 19c database integration with DBMS_OUTPUT support | Python | ✅ Active | [README](./oracle-mcp-server/README.md) |
+| [**Oracle MCP**](./oracle-mcp-server) | Oracle database integration with dynamic version detection and DBMS_OUTPUT support | Python | ✅ Active | [README](./oracle-mcp-server/README.md) |
 
 **Features:**
 - Execute SQL queries directly
@@ -123,7 +123,7 @@ pip install -e .
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
 | [**Git Extended MCP**](./mcp-server-git-extended) | Advanced Git operations and repository management | Python | ✅ Active | [README](./mcp-server-git-extended/README.md) |
-| [**GitHub PR Reviews**](./gh-tool) | AI-powered Pull Request analysis using Gemini | Node.js | ✅ Active | [README](./gh-tool/README.md) |
+| [**Gemini Reviews MCP**](./gemini-reviews-mcp) | Gemini Code Assist PR review fetcher from GitHub | Python | ✅ Active | [README](./gemini-reviews-mcp/README.md) |
 
 **Features:**
 - Advanced Git operations
@@ -153,7 +153,7 @@ mcp-servers/
 ├── ssh-mcp-server/            # SSH MCP server (Python)
 ├── asger-terminal-mcp/          # Asger Terminal MCP (Node.js)
 ├── mcp-server-git-extended/   # Git Extended MCP (Python)
-├── gh-tool/                   # GitHub PR Reviews (Node.js)
+├── gemini-reviews-mcp/        # Gemini Reviews MCP (Python)
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
 ├── query_dashboard/           # Query monitoring dashboard
 ├── shared_logger.py           # Shared logging module

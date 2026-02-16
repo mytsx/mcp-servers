@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 class GeminiPRReviewsMCPServer:
     def __init__(self):
-        self.server = Server("gemini-pr-reviews-mcp")
+        self.server = Server("gemini-reviews-mcp")
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.headers = {
             'Accept': 'application/vnd.github.v3+json',

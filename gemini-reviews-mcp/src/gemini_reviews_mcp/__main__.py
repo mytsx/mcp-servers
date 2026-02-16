@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Entry point for Gemini PR Reviews MCP Server
-Usage: uvx mcp-gemini-pr-reviews | python -m mcp_gemini_pr_reviews
+Usage: uvx gemini-reviews-mcp | python -m gemini_reviews_mcp
 """
 
 import asyncio

@@ -6,9 +6,11 @@ SSH üzerinden uzak Linux sunucularında komut çalıştırma ve sistem yönetim
 
 ### 🛠️ Araçlar (Tools)
 - **execute_command**: Shell komutları çalıştırma
-- **file_operations**: Dosya okuma/yazma/listeleme 
+- **file_operations**: Dosya okuma/yazma/listeleme
 - **system_monitor**: Sistem kaynaklarını izleme
 - **process_manager**: Process yönetimi
+- **sftp_download**: SFTP ile dosya indirme (text/base64)
+- **sftp_upload**: SFTP ile dosya yükleme (overwrite/append)
 
 ### 📊 Kaynaklar (Resources)
 - **ssh://system**: Sistem bilgileri
@@ -19,8 +21,9 @@ SSH üzerinden uzak Linux sunucularında komut çalıştırma ve sistem yönetim
 
 ### 🔒 Güvenlik
 - Tehlikeli komutlar otomatik engellenir
+- SSH key authentication desteği
 - Timeout koruması
-- Safe file operations
+- Safe file operations (SFTP)
 - Process kill sadece numeric PID ile
 - Tüm işlemler loglanır
 
@@ -40,7 +43,8 @@ No installation required! Just configure Claude Desktop:
         "SSH_HOST": "your_server_ip",
         "SSH_PORT": "22",
         "SSH_USER": "your_username",
-        "SSH_PASSWORD": "your_password"
+        "SSH_PASSWORD": "your_password",
+        "SSH_KEY_FILE": "/path/to/private_key"
       }
     }
   }
@@ -71,7 +75,16 @@ SSH_PORT=22
 SSH_USER=your_username
 SSH_PASSWORD=your_password
 SSH_TIMEOUT=30
+
+# SSH Key Authentication (optional - preferred over password)
+SSH_KEY_FILE=/path/to/your/private_key
+SSH_KEY_PASSPHRASE=your_key_passphrase  # Optional: only if key is encrypted
 ```
+
+**Authentication Priority:**
+1. `SSH_KEY_FILE` set ise -> Key authentication
+2. `SSH_PASSWORD` set ise -> Password authentication
+3. Hicbiri yoksa -> Default key lookup (~/.ssh/id_rsa) + SSH agent
 
 ### Test
 ```bash
@@ -178,6 +191,23 @@ python test_ssh.py
 }
 ```
 
+### sftp_download
+```json
+{
+  "remote_path": "/etc/hosts",
+  "encoding": "utf-8"
+}
+```
+
+### sftp_upload
+```json
+{
+  "remote_path": "/tmp/test.txt",
+  "content": "Hello World",
+  "mode": "overwrite"
+}
+```
+
 ## 🐛 Sorun Giderme
 
 ### SSH Bağlantısı Başarısız
@@ -232,9 +262,7 @@ python server.py
 - Güvenlik kontrolleri
 
 ### Roadmap
-- SSH key authentication
 - Connection pooling
-- File transfer (SCP/SFTP)
 - Interactive shell
 - Multi-server support
 
