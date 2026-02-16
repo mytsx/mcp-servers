@@ -26,7 +26,7 @@ uvx mapeg-postgres-mcp
 uvx mapeg-oracle-mcp
 
 # Or install from source
-cd postgresql-mcp-server
+cd mapeg-postgres-mcp
 pip install -e .
 ```
 
@@ -93,8 +93,8 @@ pip install -e .
 
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
-| [**PostgreSQL MCP**](./postgresql-mcp-server) | Full-featured PostgreSQL database integration with natural language queries | Python | ✅ Active | [README](./postgresql-mcp-server/README.md) |
-| [**Oracle MCP**](./oracle-mcp-server) | Oracle database integration with dynamic version detection and DBMS_OUTPUT support | Python | ✅ Active | [README](./oracle-mcp-server/README.md) |
+| [**PostgreSQL MCP**](./mapeg-postgres-mcp) | Full-featured PostgreSQL database integration with natural language queries | Python | ✅ Active | [README](./mapeg-postgres-mcp/README.md) |
+| [**Oracle MCP**](./mapeg-oracle-mcp) | Oracle database integration with dynamic version detection and DBMS_OUTPUT support | Python | ✅ Active | [README](./mapeg-oracle-mcp/README.md) |
 
 **Features:**
 - Execute SQL queries directly
@@ -122,15 +122,12 @@ pip install -e .
 
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
-| [**Git Extended MCP**](./mcp-server-git-extended) | Advanced Git operations and repository management | Python | ✅ Active | [README](./mcp-server-git-extended/README.md) |
 | [**Gemini Reviews MCP**](./gemini-reviews-mcp) | Gemini Code Assist PR review fetcher from GitHub | Python | ✅ Active | [README](./gemini-reviews-mcp/README.md) |
 | [**Agent Chat MCP**](./agent-chat) | Multi-agent chat room for Claude Code instances | Python | ✅ Active | [README](./agent-chat/README.md) |
 
 **Features:**
-- Advanced Git operations
 - PR review automation
 - Code quality analysis
-- Commit history analysis
 - Multi-agent communication
 
 ### Integrations & APIs
@@ -150,11 +147,10 @@ pip install -e .
 
 ```
 mcp-servers/
-├── postgresql-mcp-server/    # PostgreSQL MCP server (Python)
-├── oracle-mcp-server/         # Oracle MCP server (Python)
+├── mapeg-postgres-mcp/    # PostgreSQL MCP server (Python)
+├── mapeg-oracle-mcp/         # Oracle MCP server (Python)
 ├── ssh-mcp-server/            # SSH MCP server (Python)
 ├── asger-terminal-mcp/          # Asger Terminal MCP (Node.js)
-├── mcp-server-git-extended/   # Git Extended MCP (Python)
 ├── gemini-reviews-mcp/        # Gemini Reviews MCP (Python)
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
 ├── query_dashboard/           # Query monitoring dashboard
@@ -195,7 +191,7 @@ pip install mapeg-oracle-mcp
 #### Python Servers
 
 ```bash
-cd postgresql-mcp-server
+cd mapeg-postgres-mcp
 pip install -e .
 
 # Or use the old method

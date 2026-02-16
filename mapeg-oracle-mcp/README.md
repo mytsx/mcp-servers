@@ -45,7 +45,7 @@ pip install mapeg-oracle-mcp
 ### Option 3: Install from Source / Kaynak Koddan Kurulum
 
 ```bash
-cd oracle-mcp-server
+cd mapeg-oracle-mcp
 pip install -e .
 ```
 
@@ -197,4 +197,4 @@ Gelişmiş AI özellikleri için:
 
 ---
 
-**Not:** Bu MCP server Oracle veritabanları için optimize edilmiştir (versiyon otomatik tespit edilir). PostgreSQL versiyonu için `postgresql-mcp-server` klasörüne bakın.
+**Not:** Bu MCP server Oracle veritabanları için optimize edilmiştir (versiyon otomatik tespit edilir). PostgreSQL versiyonu için `mapeg-postgres-mcp` klasörüne bakın.

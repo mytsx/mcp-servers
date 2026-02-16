@@ -47,7 +47,7 @@ pip install mapeg-postgres-mcp
 ### Option 3: Install from Source / Kaynak Koddan Kurulum
 
 ```bash
-cd postgresql-mcp-server
+cd mapeg-postgres-mcp
 pip install -e .
 ```
 
