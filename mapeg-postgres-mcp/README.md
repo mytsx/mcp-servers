@@ -1,63 +1,42 @@
 # PostgreSQL MCP Server
 
-Natural language queries to PostgreSQL database via Model Context Protocol (MCP).
+[![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/mapeg-postgres-mcp)](https://pypi.org/project/mapeg-postgres-mcp/)
 
-PostgreSQL veritabanınızı Claude Desktop ile doğal dilde sorgulayın.
+A Model Context Protocol (MCP) server for PostgreSQL databases. Query, explore, and analyze your PostgreSQL databases directly from any MCP-compatible AI client.
 
-## Features / Özellikler
+## Features
 
-- ✅ PostgreSQL database connection / Veritabanı bağlantısı
-- ✅ Natural language queries (Turkish/English) / Doğal dil sorguları
-- ✅ Execute SQL queries / SQL sorgu çalıştırma
-- ✅ Database schema exploration / Tablo yapısını görüntüleme
-- ✅ Database statistics / Veritabanı istatistikleri
-- ✅ Smart query suggestions / Akıllı sorgu önerileri
-- ✅ Secure connection via environment variables / Güvenli bağlantı
+- **Execute SQL** — Run any SQL query with automatic result formatting
+- **Natural Language Queries** — Ask questions in plain English or Turkish
+- **Schema Exploration** — List tables, describe columns, view statistics
+- **Execution Plans** — EXPLAIN / EXPLAIN ANALYZE with buffer stats
+- **Query History** — Review past queries scoped to your database and workspace
+- **Read-Only Mode** — Optional write protection via `READ_ONLY=true`
+- **Zero Install** — Works with `uvx`, no virtual environment needed
 
-## Installation / Kurulum
+## Quick Start
 
-### Option 1: Using uvx (Recommended / Önerilen)
-
-No installation required! Just configure Claude Desktop:
-
-```json
-{
-  "mcpServers": {
-    "postgres": {
-      "command": "uvx",
-      "args": ["mapeg-postgres-mcp"],
-      "env": {
-        "DB_HOST": "localhost",
-        "DB_PORT": "5432",
-        "DB_NAME": "your_database",
-        "DB_USER": "your_user",
-        "DB_PASSWORD": "your_password"
-      }
-    }
-  }
-}
-```
-
-### Option 2: Install from PyPI
+### Claude Code
 
 ```bash
-pip install mapeg-postgres-mcp
+claude mcp add postgres \
+  -e DB_HOST=localhost \
+  -e DB_PORT=5432 \
+  -e DB_NAME=mydb \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=secret \
+  -- uvx mapeg-postgres-mcp
 ```
 
-### Option 3: Install from Source / Kaynak Koddan Kurulum
+### Claude Desktop
 
-```bash
-cd mapeg-postgres-mcp
-pip install -e .
-```
+Add to your config file:
 
-## Configuration / Yapılandırma
-
-### Claude Desktop Configuration
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -77,125 +56,175 @@ pip install -e .
 }
 ```
 
-### Environment Variables
+### Cursor
 
-Alternatively, create a `.env` file:
+Add to `~/.cursor/mcp.json`:
 
-```env
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=mydb
-DB_USER=postgres
-DB_PASSWORD=secret
-READ_ONLY=true  # Optional: Block write operations (INSERT, UPDATE, DELETE, DROP, etc.)
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
 ```
 
-## Kullanım
+### Windsurf
 
-Claude Desktop'ı yeniden başlattıktan sonra şu şekilde kullanabilirsiniz:
+Add to Windsurf MCP config:
 
-### 🤖 Doğal Dil Sorguları:
-- "Tabloları listele" / "Show tables"
-- "Kullanıcıları göster" / "Show users"  
-- "Şemaları listele" / "Show schemas"
-- "Veritabanı bilgilerini göster" / "Show database info"
-
-### 🛠️ Araçlar:
-
-#### 1. **natural_language_query**
-Doğal dilde sorgulama
-```
-Örnek: "users tablosundaki tüm kayıtları göster"
-```
-
-#### 2. **execute_sql** 
-Doğrudan SQL çalıştırma
-```sql
-SELECT * FROM pg_tables WHERE schemaname = 'public';
-SELECT table_name, column_name FROM information_schema.columns;
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
 ```
 
-#### 3. **describe_table**
-Tablo yapısını görüntüleme
-```
-Örnek: "users" veya "public.users"
+### VS Code
+
+Add to your VS Code settings (JSON):
+
+```json
+"mcp": {
+  "servers": {
+    "postgres": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
 ```
 
-#### 4. **smart_query**
-AI destekli akıllı sorgulama
-```
-Örnek: "En aktif kullanıcıları bul"
-```
-
-### 📊 Kaynaklar:
-- **postgresql://tables**: Tüm tabloları listele
-- **postgresql://schema**: Detaylı şema bilgisi
-- **postgresql://stats**: Veritabanı istatistikleri
-
-## Test
-
-PostgreSQL bağlantısını test etmek için:
+### Install from Source
 
 ```bash
-source venv/bin/activate
-python -c "
-import psycopg2
-conn = psycopg2.connect(
-    host='localhost', 
-    database='docsmapeg', 
-    user='postgres', 
-    password='postgres'
-)
-print('✅ Bağlantı başarılı!')
-conn.close()
-"
+cd mapeg-postgres-mcp
+pip install -e .
 ```
 
-## Sorun Giderme
+## Configuration
 
-### 1. PostgreSQL Bağlantı Hatası:
-```bash
-# PostgreSQL servisini başlat
-brew services start postgresql
+| Environment Variable | Required | Default | Description |
+|---------------------|----------|---------|-------------|
+| `DB_HOST` | No | `localhost` | PostgreSQL host |
+| `DB_PORT` | No | `5432` | PostgreSQL port |
+| `DB_NAME` | Yes | — | Database name |
+| `DB_USER` | No | `postgres` | Database user |
+| `DB_PASSWORD` | Yes | — | Database password |
+| `READ_ONLY` | No | `false` | Block write operations (INSERT, UPDATE, DELETE, DROP, etc.) |
 
-# Port kontrolü
-lsof -i :5432
+## Tools
 
-# Veritabanı var mı kontrol et
-psql -U postgres -l
-```
+<details>
+<summary><code>execute_sql</code> — Run SQL queries</summary>
 
-### 2. MCP Server Hatası:
-```bash
-# Log dosyalarını kontrol et
-tail -f ~/Library/Logs/Claude/mcp-server-postgresql-db.log
+Execute any SQL query on the connected PostgreSQL database.
 
-# Manuel test
-source venv/bin/activate
-python server.py
-```
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sql` | string | Yes | SQL query to execute |
+| `limit` | integer | No | Max rows to return (default: 100) |
 
-### 3. Paket Hatası:
-```bash
-source venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
+</details>
 
-## Güvenlik
+<details>
+<summary><code>natural_language_query</code> — Query in plain language</summary>
 
-- Veritabanı şifreleri `.env` dosyasında saklanır
-- Sadece read-only işlemler güvenlidir
-- SQL injection koruması otomatik limit ekler
-- Parametreli sorgular kullanılır
+Convert natural language to SQL and execute. Supports Turkish and English.
 
-## Geliştirme
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Natural language query |
 
-Daha gelişmiş AI özellikler için:
-1. `.env` dosyasına `ANTHROPIC_API_KEY` ekleyin
-2. `handle_smart_query` fonksiyonunu geliştirin
-3. Şema analizi ve SQL üretimi ekleyin
+**Examples:** "show all tables", "tabloları listele", "show database info"
 
----
+</details>
 
-**Not:** PostgreSQL sunucunuz çalışmıyorsa, önce `brew services start postgresql` komutu ile başlatın.
+<details>
+<summary><code>describe_table</code> — Table structure details</summary>
+
+Get column definitions, row count, and table size.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (`schema.table` or `table`) |
+
+</details>
+
+<details>
+<summary><code>smart_query</code> — AI-powered query assistant</summary>
+
+Analyzes your schema and suggests queries based on your question.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `question` | string | Yes | Question about your data |
+
+</details>
+
+<details>
+<summary><code>explain_query</code> — Execution plan analysis</summary>
+
+Show the EXPLAIN plan for a SQL query.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sql` | string | Yes | SQL query to explain |
+| `analyze` | boolean | No | Run EXPLAIN ANALYZE (default: false) |
+| `format` | string | No | Output format: `text`, `json`, `yaml` (default: text) |
+| `buffers` | boolean | No | Include buffer usage (requires analyze=true) |
+
+</details>
+
+<details>
+<summary><code>get_query_history</code> — Review past queries</summary>
+
+Retrieve recent query history scoped to this database and workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | No | Number of entries (default: 20) |
+| `status` | string | No | Filter: `success` or `error` |
+| `tool_name` | string | No | Filter by tool name |
+
+</details>
+
+## Resources
+
+| URI | Description |
+|-----|-------------|
+| `postgresql://tables` | List all user tables |
+| `postgresql://schema` | Detailed schema with columns |
+| `postgresql://stats` | Database version and statistics |
+
+## License
+
+MIT

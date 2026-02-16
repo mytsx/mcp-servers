@@ -1,39 +1,75 @@
-# MCP Servers Collection
+# MCP Servers
 
-> A comprehensive collection of Model Context Protocol (MCP) servers for databases, SSH, development tools, and more.
+[![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
+[![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-![Python](https://img.shields.io/badge/python-3.10+-blue)
-![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![MCP](https://img.shields.io/badge/MCP-1.0+-purple)
+A collection of [Model Context Protocol](https://modelcontextprotocol.io) servers for databases, remote access, automation, and developer tools. Each server works standalone with any MCP-compatible client.
 
-## 🚀 Quick Start
+## Servers
 
-### Prerequisites
+### Database
 
-- **Python** 3.10 or higher
-- **Node.js** 18 or higher (for TypeScript servers)
-- **Claude Desktop** or any MCP-compatible client
-- **uv** package manager (optional but recommended)
+| Server | Package | Description |
+|--------|---------|-------------|
+| [PostgreSQL MCP](./mapeg-postgres-mcp) | [`mapeg-postgres-mcp`](https://pypi.org/project/mapeg-postgres-mcp/) | Query, explore, and analyze PostgreSQL databases with natural language support |
+| [Oracle MCP](./mapeg-oracle-mcp) | [`mapeg-oracle-mcp`](https://pypi.org/project/mapeg-oracle-mcp/) | Oracle 11g–23ai with PL/SQL source, DBMS_OUTPUT, and auto version detection |
 
-### Installation
+### Automation & Integrations
 
-Each server can be installed and used independently:
+| Server | Package | Description |
+|--------|---------|-------------|
+| [n8n Chatbot MCP](./n8n-chatbot-mcp) | [`n8n-chatbot-mcp`](https://pypi.org/project/n8n-chatbot-mcp/) | Turn any n8n Chat Trigger webhook into an MCP tool with auto-discovery |
+| [GIB API MCP](./gib-api-mcp) | [`gib-api-mcp`](https://www.npmjs.com/package/gib-api-mcp) | Turkish Revenue Administration (GIB) e-invoice API integration |
+
+### Remote Access
+
+| Server | Package | Description |
+|--------|---------|-------------|
+| [SSH MCP](./ssh-mcp-server) | [`mcp-server-ssh`](https://pypi.org/project/mcp-server-ssh/) | Remote command execution over SSH with session logging |
+| [Asger Terminal MCP](./asger-terminal-mcp) | [`asger-terminal-mcp`](https://www.npmjs.com/package/asger-terminal-mcp) | Interactive web terminal with screenshot and OCR support |
+
+### Developer Tools
+
+| Server | Package | Description |
+|--------|---------|-------------|
+| [Gemini Reviews MCP](./gemini-reviews-mcp) | [`gemini-reviews-mcp`](https://pypi.org/project/gemini-reviews-mcp/) | Fetch Gemini Code Assist PR reviews from GitHub |
+| [Agent Chat MCP](./agent-chat) | — | Multi-room chat for Claude Code agent instances |
+
+## Quick Start
+
+Install any server with a single command — no virtual environment needed:
 
 ```bash
-# Using uvx (recommended - no installation needed)
+# Python servers
 uvx mapeg-postgres-mcp
 uvx mapeg-oracle-mcp
+uvx n8n-chatbot-mcp
 
-# Or install from source
-cd mapeg-postgres-mcp
-pip install -e .
+# Node.js servers
+npx -y asger-terminal-mcp
+npx -y gib-api-mcp
 ```
 
-### Claude Desktop Configuration
+### Claude Code
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+```bash
+claude mcp add postgres \
+  -e DB_HOST=localhost \
+  -e DB_PORT=5432 \
+  -e DB_NAME=mydb \
+  -e DB_USER=postgres \
+  -e DB_PASSWORD=secret \
+  -- uvx mapeg-postgres-mcp
+```
+
+### Claude Desktop
+
+Add to your config file:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -53,365 +89,106 @@ pip install -e .
       "command": "uvx",
       "args": ["mapeg-oracle-mcp"],
       "env": {
-        "ORACLE_CONNECTION_STRING": "User Id=user;Password=pass;Data Source=..."
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
       }
-    },
-    "ssh": {
-      "command": "uvx",
-      "args": ["mcp-server-ssh"],
-      "env": {
-        "SSH_HOST": "your_host",
-        "SSH_USER": "your_user",
-        "SSH_PASSWORD": "your_password"
-      }
-    },
-    "ssh-terminal": {
-      "command": "npx",
-      "args": ["-y", "asger-terminal-mcp"],
-      "env": {
-        "TERMINAL_URL": "https://your-web-terminal-url"
-      }
-    },
-    "gemini-reviews": {
-      "command": "uvx",
-      "args": ["gemini-reviews-mcp"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_your_token"
-      }
-    },
-    "gib-api": {
-      "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
     },
     "my-chatbot": {
       "command": "uvx",
       "args": ["n8n-chatbot-mcp"],
       "env": {
-        "N8N_CHATBOT_URL": "https://n8n.example.com/webhook/my-bot/chat",
-        "N8N_CHATBOT_NAME": "My Chatbot",
-        "N8N_CHATBOT_DESCRIPTION": "What this chatbot knows about"
+        "N8N_CHATBOT_URL": "https://n8n.example.com/webhook/my-bot/chat"
       }
     }
   }
 }
 ```
 
-## 📦 Available Servers
+### Cursor
 
-### Database Servers
+Add to `~/.cursor/mcp.json` using the same format as Claude Desktop.
 
-| Server | Description | Language | Status | Documentation |
-|--------|-------------|----------|--------|---------------|
-| [**PostgreSQL MCP**](./mapeg-postgres-mcp) | Full-featured PostgreSQL database integration with natural language queries | Python | ✅ Active | [README](./mapeg-postgres-mcp/README.md) |
-| [**Oracle MCP**](./mapeg-oracle-mcp) | Oracle database integration with dynamic version detection and DBMS_OUTPUT support | Python | ✅ Active | [README](./mapeg-oracle-mcp/README.md) |
+### Windsurf
 
-**Features:**
-- Execute SQL queries directly
-- Natural language query support (Turkish/English)
-- Database schema exploration
-- Table information and statistics
-- Transaction support
-- Query logging and monitoring
+Add to Windsurf MCP config using the same format as Claude Desktop.
 
-### SSH & Remote Access
+### VS Code
 
-| Server | Description | Language | Status | Documentation |
-|--------|-------------|----------|--------|---------------|
-| [**SSH Python MCP**](./ssh-mcp-server) | Remote command execution with logging and dashboard | Python | ✅ Active | [README](./ssh-mcp-server/README.md) |
-| [**Asger Terminal MCP**](./asger-terminal-mcp) | Interactive terminal with screenshot and OCR support | Node.js | ✅ Active | [README](./asger-terminal-mcp/README.md) |
-
-**Features:**
-- Remote command execution
-- Interactive terminal sessions
-- Screenshot capture
-- OCR text extraction
-- Session logging
-
-### Development Tools
-
-| Server | Description | Language | Status | Documentation |
-|--------|-------------|----------|--------|---------------|
-| [**Gemini Reviews MCP**](./gemini-reviews-mcp) | Gemini Code Assist PR review fetcher from GitHub | Python | ✅ Active | [README](./gemini-reviews-mcp/README.md) |
-| [**Agent Chat MCP**](./agent-chat) | Multi-agent chat room for Claude Code instances | Python | ✅ Active | [README](./agent-chat/README.md) |
-
-**Features:**
-- PR review automation
-- Code quality analysis
-- Multi-agent communication
-
-### Integrations & APIs
-
-| Server | Description | Language | Status | Documentation |
-|--------|-------------|----------|--------|---------------|
-| [**n8n Chatbot MCP**](./n8n-chatbot-mcp) | Generic n8n Chat Trigger webhook as MCP tool | Python | ✅ Active | [README](./n8n-chatbot-mcp/README.md) |
-| [**GİB API MCP**](./gib-api-mcp) | Turkish Revenue Administration (GİB) API integration | Node.js | ✅ Active | [README](./gib-api-mcp/README.md) |
-
-### Utilities
-
-| Component | Description | Language | Purpose |
-|-----------|-------------|----------|---------|
-| [**Query Dashboard**](./query_dashboard) | Web-based query monitoring | Python | Monitoring |
-
-## 🏗️ Repository Structure
-
-```
-mcp-servers/
-├── mapeg-postgres-mcp/    # PostgreSQL MCP server (Python)
-├── mapeg-oracle-mcp/         # Oracle MCP server (Python)
-├── ssh-mcp-server/            # SSH MCP server (Python)
-├── asger-terminal-mcp/          # Asger Terminal MCP (Node.js)
-├── gemini-reviews-mcp/        # Gemini Reviews MCP (Python)
-├── gib-api-mcp/              # GİB API MCP (Node.js)
-├── n8n-chatbot-mcp/           # n8n Chat Trigger MCP (Python)
-├── query_dashboard/           # Query monitoring dashboard
-└── README.md
-```
-
-## 📖 Installation Guide
-
-### Option 1: Using uvx (Recommended)
-
-No installation or virtual environment needed! Just configure Claude Desktop:
+Add to your VS Code settings (JSON):
 
 ```json
-{
-  "mcpServers": {
+"mcp": {
+  "servers": {
     "postgres": {
+      "type": "stdio",
       "command": "uvx",
-      "args": ["mapeg-postgres-mcp"]
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
     }
   }
 }
 ```
 
-### Option 2: Install from PyPI/npm
+### Install from Source
 
 ```bash
 # Python servers
-pip install mapeg-postgres-mcp
-pip install mapeg-oracle-mcp
-
-# After publishing to PyPI
-```
-
-### Option 3: Install from Source
-
-#### Python Servers
-
-```bash
 cd mapeg-postgres-mcp
 pip install -e .
 
-# Or use the old method
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-#### Node.js Servers
-
-```bash
-cd asger-terminal-mcp  # Asger Terminal MCP
+# Node.js servers
+cd asger-terminal-mcp
 npm install
 ```
 
-## 🛠️ Development
+## Query Logging
 
-### Setting Up Development Environment
+Database MCP servers include a built-in `query_logger` module that writes to a shared SQLite database at `~/.local/share/mapeg-mcp/query_logs.db`. Each log entry includes:
 
-```bash
-# Clone repository
-git clone https://github.com/yourusername/mcp-servers
-cd mcp-servers
+- **`db_identifier`** — which database (e.g. `localhost:5432/mydb`)
+- **`workspace_path`** — which project directory
 
-# For Python servers
-cd <server-directory>
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev]"
+The `get_query_history` tool lets agents review their own recent queries, scoped to their database and workspace.
 
-# For Node.js servers
-cd <server-directory>
-npm install
-```
+### Query Dashboard
 
-### Running Tests
-
-```bash
-# Python
-pytest tests/
-
-# Node.js
-npm test
-```
-
-### Code Quality
-
-```bash
-# Python
-black src/
-ruff check src/
-
-# Node.js
-npm run lint
-npm run format
-```
-
-## 📊 Query Monitoring Dashboard
-
-Track all database queries in real-time:
+Monitor all database queries in real-time:
 
 ```bash
 cd query_dashboard
+pip install flask
 python app.py
 # Open http://localhost:5555
 ```
 
-**Features:**
-- Real-time query monitoring
-- Execution time tracking
-- Error logging
-- Server type filtering
-- Query history
+Supports filtering by server type, database, and workspace.
 
-## 🔒 Security
+## Security
 
-### Best Practices
+- Store credentials in environment variables, not in code
+- Use `READ_ONLY=true` for database servers when write access isn't needed
+- Prefer SSH key-based authentication over passwords
+- All `.env` files are gitignored
 
-- ✅ Store credentials in `.env` files (gitignored)
-- ✅ Use environment variables for sensitive data
-- ✅ Prefer read-only database users
-- ✅ Enable query logging for audit trails
-- ✅ Use SSH key-based authentication
-- ✅ Never commit credentials to Git
-
-### Credential Management
-
-Each server uses `.env` files for configuration:
-
-```env
-# .env example
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=mydb
-DB_USER=myuser
-DB_PASSWORD=mypassword
-```
-
-**Important:** All `.env` files are gitignored and never committed.
-
-## 🐛 Troubleshooting
-
-### PostgreSQL Connection Issues
-
-```bash
-# Check PostgreSQL is running
-brew services list | grep postgresql
-# or
-pg_ctl status
-
-# Test connection
-psql -U postgres -h localhost -d mydb
-```
-
-### Oracle Connection Issues
-
-```bash
-# Test Oracle connection
-sqlplus user/password@hostname:1521/service_name
-
-# Check thin mode is working (no Instant Client needed)
-python -c "import oracledb; print(oracledb.version)"
-```
-
-### MCP Server Not Starting
-
-```bash
-# Check Claude Desktop logs
-tail -f ~/Library/Logs/Claude/mcp-server-*.log
-
-# Test server manually
-cd <server-directory>
-python server.py
-```
-
-### Permission Issues
-
-- Verify file permissions: `ls -la`
-- Check user has database access
-- Review `.env` file configuration
-
-## 📝 Query Logging
-
-Each MCP server includes a built-in `query_logger` module that writes to a shared SQLite database at `~/.local/share/mapeg-mcp/query_logs.db`. Logs include `db_identifier` (which database) and `workspace_path` (which project) for multi-instance filtering.
-
-The **Query Dashboard** reads this database directly and supports filtering by server type, database, and workspace.
-
-## 🗺️ Roadmap
-
-### Near Term
-- [ ] Publish PostgreSQL MCP to PyPI
-- [ ] Publish Oracle MCP to PyPI
-- [ ] Add MongoDB MCP server
-- [ ] Create MCPB bundles for one-click installation
-
-### Medium Term
-- [ ] Add MySQL MCP server
-- [ ] Kubernetes integration MCP
-- [ ] AWS services MCP suite
-- [ ] Enhanced monitoring dashboard
-- [ ] CI/CD pipeline
-
-### Long Term
-- [ ] Multi-database query federation
-- [ ] GraphQL MCP server
-- [ ] Real-time collaboration features
-- [ ] Cloud-hosted MCP servers
-- [ ] Enterprise support package
-
-## 📄 License
-
-MIT License - see [LICENSE](./LICENSE) file for details.
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
+## Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch (`git checkout -b feature/my-feature`)
+3. Commit your changes
+4. Push and open a Pull Request
 
-### Contribution Guidelines
+## Resources
 
-- Follow existing code style
-- Add tests for new features
-- Update documentation
-- Ensure all tests pass
-- Use conventional commits
-
-## 📞 Support & Contact
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/mcp-servers/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/mcp-servers/discussions)
-- **Email**: your.email@example.com
-
-## 🌟 Acknowledgments
-
-- [Model Context Protocol](https://modelcontextprotocol.io) by Anthropic
-- [Anthropic Official MCP Servers](https://github.com/modelcontextprotocol/servers)
-- Community contributors and testers
-
-## 📚 Resources
-
-- [Official MCP Documentation](https://modelcontextprotocol.io)
+- [MCP Documentation](https://modelcontextprotocol.io)
 - [MCP Specification](https://spec.modelcontextprotocol.io)
 - [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk)
 - [TypeScript MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk)
 
----
+## License
 
-**Note:** This is a monorepo containing multiple independent MCP servers. Each server can be used standalone or combined with others. Refer to individual server READMEs for specific documentation and usage examples.
-
-**Status**: Active development | Last updated: February 2026
+MIT

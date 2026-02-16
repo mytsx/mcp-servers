@@ -1,26 +1,41 @@
 # Oracle MCP Server
 
-Natural language queries to Oracle database via Model Context Protocol (MCP).
+[![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/mapeg-oracle-mcp)](https://pypi.org/project/mapeg-oracle-mcp/)
 
-Oracle 19c veritabanınızı Claude Desktop ile doğal dilde sorgulayın.
+A Model Context Protocol (MCP) server for Oracle databases. Query, explore, and analyze your Oracle databases directly from any MCP-compatible AI client. Supports Oracle 11g through 23ai with automatic version detection.
 
-## Features / Özellikler
+## Features
 
-- ✅ Oracle multi-version support (11g, 12c, 18c, 19c, 21c, 23ai) / Çoklu versiyon desteği
-- ✅ Natural language queries (Turkish/English) / Doğal dil sorguları
-- ✅ Execute Oracle SQL / SQL sorgu çalıştırma
-- ✅ Database schema exploration / Tablo yapısını görüntüleme
-- ✅ Database statistics / Veritabanı istatistikleri
-- ✅ Smart query suggestions / Akıllı sorgu önerileri
-- ✅ Secure connection via environment variables / Güvenli bağlantı
-- ✅ Dynamic version detection / Dinamik versiyon tespiti
-- ✅ Oracle thin mode (no Instant Client required) / Instant Client gerektirmez
+- **Execute SQL** — Run any Oracle SQL with automatic result formatting
+- **Schema Tools** — Describe tables, search columns, view indexes and constraints
+- **Source Code** — Read PL/SQL functions, procedures, packages, and triggers
+- **Execution Plans** — EXPLAIN PLAN via DBMS_XPLAN with configurable detail levels
+- **Relationships** — Foreign key analysis with incoming/outgoing direction filtering
+- **DBMS_OUTPUT** — Automatic capture of PL/SQL output with buffer management
+- **Query History** — Review past queries scoped to your database and workspace
+- **Auto Version Detection** — Detects Oracle version (11g–23ai) dynamically
+- **Thin Mode** — No Oracle Instant Client required
+- **Read-Only Mode** — Optional write protection via `READ_ONLY=true`
 
-## Installation / Kurulum
+## Quick Start
 
-### Option 1: Using uvx (Recommended / Önerilen)
+### Claude Code
 
-No installation required! Just configure Claude Desktop:
+```bash
+claude mcp add oracle \
+  -e ORACLE_CONNECTION_STRING="User Id=myuser;Password=mypass;Data Source=host:1521/service" \
+  -- uvx mapeg-oracle-mcp
+```
+
+### Claude Desktop
+
+Add to your config file:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -29,172 +44,259 @@ No installation required! Just configure Claude Desktop:
       "command": "uvx",
       "args": ["mapeg-oracle-mcp"],
       "env": {
-        "ORACLE_CONNECTION_STRING": "User Id=username;Password=password;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=hostname)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=service)))"
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
       }
     }
   }
 }
 ```
 
-### Option 2: Install from PyPI
+### Cursor
 
-```bash
-pip install mapeg-oracle-mcp
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mapeg-oracle-mcp"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+      }
+    }
+  }
+}
 ```
 
-### Option 3: Install from Source / Kaynak Koddan Kurulum
+### Windsurf
+
+Add to Windsurf MCP config:
+
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mapeg-oracle-mcp"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+      }
+    }
+  }
+}
+```
+
+### VS Code
+
+Add to your VS Code settings (JSON):
+
+```json
+"mcp": {
+  "servers": {
+    "oracle": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mapeg-oracle-mcp"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+      }
+    }
+  }
+}
+```
+
+### Install from Source
 
 ```bash
 cd mapeg-oracle-mcp
 pip install -e .
 ```
 
-## Configuration / Yapılandırma
+## Configuration
 
-### Claude Desktop Configuration
+| Environment Variable | Required | Default | Description |
+|---------------------|----------|---------|-------------|
+| `ORACLE_CONNECTION_STRING` | Yes | — | Connection string: `User Id=...;Password=...;Data Source=...` |
+| `READ_ONLY` | No | `false` | Block write operations (INSERT, UPDATE, DELETE, DROP, etc.) |
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+### Connection String Format
 
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "oracle": {
-      "command": "uvx",
-      "args": ["mapeg-oracle-mcp"],
-      "env": {
-        "ORACLE_CONNECTION_STRING": "User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
-      }
-    }
-  }
-}
+```
+User Id=USERNAME;Password=PASSWORD;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=hostname)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=service)))
 ```
 
-### Environment Variables
+Or the short form:
 
-Alternatively, create a `.env` file:
-
-```env
-ORACLE_CONNECTION_STRING=User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))
-READ_ONLY=true  # Optional: Block write operations (INSERT, UPDATE, DELETE, DROP, etc.)
+```
+User Id=USERNAME;Password=PASSWORD;Data Source=hostname:1521/service_name
 ```
 
-## 🛠️ Kullanım
+## Tools
 
-Claude Desktop'ı yeniden başlattıktan sonra şu şekilde kullanabilirsiniz:
+<details>
+<summary><code>execute_sql</code> — Run SQL queries</summary>
 
-### 🤖 Doğal Dil Sorguları:
-- "Tabloları listele" / "Show tables"
-- "Kullanıcıları göster" / "Show users"
-- "Şemaları listele" / "Show schemas"
-- "Veritabanı bilgilerini göster" / "Show database info"
+Execute any SQL query on the connected Oracle database. Supports SELECT, DML, DDL, and PL/SQL blocks with automatic DBMS_OUTPUT capture.
 
-### 🔧 Araçlar:
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sql` | string | Yes | Oracle SQL query |
+| `limit` | integer | No | Max rows to return (default: 100) |
 
-#### 1. **natural_language_query**
-Oracle için optimize edilmiş doğal dil sorgulama
-```
-Örnek: "MADEN kullanıcısının tablolarını göster"
-```
+</details>
 
-#### 2. **execute_sql**
-Doğrudan Oracle SQL çalıştırma
-```sql
--- Oracle'a özgü sorgular
-SELECT * FROM user_tables;
-SELECT * FROM all_tables WHERE owner = 'MADEN';
-SELECT table_name, column_name FROM user_tab_columns;
-```
+<details>
+<summary><code>describe_table</code> — Table structure details</summary>
 
-#### 3. **describe_table**
-Oracle tablo yapısını görüntüleme
-```
-Örnek: "TBL_PROJE" (Oracle'da tablo isimleri BÜYÜK HARFLE)
-```
+Get column definitions and row count from USER_TAB_COLUMNS.
 
-#### 4. **smart_query**
-AI destekli akıllı Oracle sorgulama
-```
-Örnek: "En büyük tabloları bul"
-```
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (case-insensitive) |
 
-### 📊 Kaynaklar:
-- **oracle://tables**: USER_TABLES view'ından tablo listesi
-- **oracle://schema**: USER_TAB_COLUMNS'dan şema bilgisi
-- **oracle://stats**: V$INSTANCE'dan veritabanı istatistikleri
+</details>
 
-## 🔍 Oracle Özellikleri
+<details>
+<summary><code>get_source_code</code> — Read PL/SQL source</summary>
 
-### Desteklenen Oracle View'ları:
-- `USER_TABLES` - Kullanıcı tabloları
-- `ALL_TABLES` - Erişilebilir tüm tablolar
-- `USER_TAB_COLUMNS` - Tablo sütunları
-- `V$INSTANCE` - Veritabanı instance bilgisi
-- `ALL_USERS` - Veritabanı kullanıcıları
+Retrieve source code for functions, procedures, packages, and triggers.
 
-### SQL Özellikleri:
-- `FETCH FIRST n ROWS ONLY` - Oracle 12c+ syntax
-- `ROWNUM` - Klasik Oracle limitleme
-- Büyük/küçük harf duyarlılığı (tablo isimleri BÜYÜK HARF)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `object_name` | string | Yes | Object name (case-insensitive) |
+| `object_type` | string | No | FUNCTION, PROCEDURE, TRIGGER, PACKAGE, PACKAGE BODY |
 
-## 🧪 Test
+</details>
 
-Oracle bağlantısını test etmek için:
+<details>
+<summary><code>get_view_definition</code> — View SQL definition</summary>
 
-```bash
-source venv/bin/activate
-python -c "
-import oracledb
-conn = oracledb.connect(
-    user='MADEN',
-    password='MADEN',
-    dsn='(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=10.50.53.15)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=madendev)))'
-)
-print('✅ Oracle bağlantısı başarılı!')
-conn.close()
-"
-```
+Get the SQL definition of an Oracle view from USER_VIEWS.
 
-## 🐛 Sorun Giderme
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `view_name` | string | Yes | View name (case-insensitive) |
 
-### 1. Oracle Bağlantı Hatası:
-```bash
-# Ağ bağlantısını kontrol et
-telnet 10.50.53.15 1521
+</details>
 
-# TNS ping
-tnsping madendev
-```
+<details>
+<summary><code>search_tables</code> — Search tables by pattern</summary>
 
-### 2. MCP Server Hatası:
-```bash
-# Log dosyalarını kontrol et
-tail -f ~/Library/Logs/Claude/mcp-server-oracle-db.log
+Find tables matching a name pattern.
 
-# Manuel test
-source venv/bin/activate
-python server.py
-```
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pattern` | string | Yes | Search pattern (supports `%` wildcard) |
+| `limit` | integer | No | Max results (default: 100) |
 
-### 3. Version Uyumsuzluğu:
-- Oracle thin mode kullanılır (versiyon otomatik tespit edilir)
-- Eski Oracle sürümleri için Instant Client gerekebilir
+</details>
 
-## 🔒 Güvenlik
+<details>
+<summary><code>search_columns</code> — Search columns across tables</summary>
 
-- Veritabanı şifreleri `.env` dosyasında saklanır
-- `.gitignore` ile versiyon kontrolünden hariç tutulur
-- Sadece read-only işlemler önerilir
-- Parametreli sorgular kullanılır
+Find columns matching a pattern, optionally filtered by data type.
 
-## 📈 Geliştirme
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `pattern` | string | Yes | Column name pattern (supports `%` wildcard) |
+| `data_type` | string | No | Filter by data type (e.g., `VARCHAR2`) |
+| `limit` | integer | No | Max results (default: 100) |
 
-Gelişmiş AI özellikleri için:
-1. `.env` dosyasına geçerli `ANTHROPIC_API_KEY` ekleyin
-2. `handle_smart_query` fonksiyonunu geliştirin
-3. Şema analizi ve otomatik SQL üretimi ekleyin
+</details>
 
----
+<details>
+<summary><code>get_table_indexes</code> — Index information</summary>
 
-**Not:** Bu MCP server Oracle veritabanları için optimize edilmiştir (versiyon otomatik tespit edilir). PostgreSQL versiyonu için `mapeg-postgres-mcp` klasörüne bakın.
+List all indexes on a table with column details.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (case-insensitive) |
+
+</details>
+
+<details>
+<summary><code>get_table_constraints</code> — Constraint details</summary>
+
+Get primary keys, foreign keys, unique and check constraints.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (case-insensitive) |
+| `constraint_type` | string | No | Filter: `P` (PK), `R` (FK), `C` (Check), `U` (Unique) |
+
+</details>
+
+<details>
+<summary><code>analyze_table_size</code> — Table size and statistics</summary>
+
+Row count, average row length, block count, and size in MB.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (case-insensitive) |
+
+</details>
+
+<details>
+<summary><code>get_table_relationships</code> — Foreign key relationships</summary>
+
+Analyze incoming and outgoing foreign key relationships.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `table_name` | string | Yes | Table name (case-insensitive) |
+| `direction` | string | No | `incoming`, `outgoing`, or `both` (default: both) |
+
+</details>
+
+<details>
+<summary><code>list_database_objects</code> — List objects by type</summary>
+
+List tables, views, functions, procedures, packages, triggers, sequences, or indexes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `object_type` | string | Yes | TABLE, VIEW, FUNCTION, PROCEDURE, PACKAGE, TRIGGER, SEQUENCE, INDEX |
+| `pattern` | string | No | Name pattern filter (supports `%` wildcard) |
+| `limit` | integer | No | Max results (default: 100) |
+
+</details>
+
+<details>
+<summary><code>explain_plan</code> — Execution plan analysis</summary>
+
+Generate execution plans using EXPLAIN PLAN and DBMS_XPLAN.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sql` | string | Yes | SQL query to explain |
+| `format` | string | No | Detail level: `basic`, `typical`, `all` (default: typical) |
+
+</details>
+
+<details>
+<summary><code>get_query_history</code> — Review past queries</summary>
+
+Retrieve recent query history scoped to this database and workspace.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | No | Number of entries (default: 20) |
+| `status` | string | No | Filter: `success` or `error` |
+| `tool_name` | string | No | Filter by tool name |
+
+</details>
+
+## Resources
+
+| URI | Description |
+|-----|-------------|
+| `oracle://tables` | List all user tables |
+| `oracle://schema` | Table columns from USER_TAB_COLUMNS |
+| `oracle://stats` | Database version and instance info |
+
+## License
+
+MIT
