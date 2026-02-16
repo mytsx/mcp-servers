@@ -30,6 +30,12 @@ A collection of [Model Context Protocol](https://modelcontextprotocol.io) server
 | [SSH MCP](./ssh-mcp-server) | [`mcp-server-ssh`](https://pypi.org/project/mcp-server-ssh/) | Remote command execution over SSH with session logging |
 | [Asger Terminal MCP](./asger-terminal-mcp) | [`asger-terminal-mcp`](https://www.npmjs.com/package/asger-terminal-mcp) | Interactive web terminal with screenshot and OCR support |
 
+### Documentation
+
+| Server | Package | Description |
+|--------|---------|-------------|
+| [Docusaurus MCP](./docusaurus-mcp) | [`docusaurus-mcp`](https://pypi.org/project/docusaurus-mcp/) | Search, browse, and read any Docusaurus documentation site |
+
 ### Developer Tools
 
 | Server | Package | Description |
@@ -46,6 +52,7 @@ Install any server with a single command — no virtual environment needed:
 uvx mapeg-postgres-mcp
 uvx mapeg-oracle-mcp
 uvx n8n-chatbot-mcp
+uvx docusaurus-mcp
 
 # Node.js servers
 npx -y asger-terminal-mcp
