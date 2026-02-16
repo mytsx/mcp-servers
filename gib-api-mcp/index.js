@@ -7,11 +7,11 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
 
-const API_URL = 'https://gib-api-proxy.mehmet49946.workers.dev/api/gecikme-zammi';
+const BASE_URL = 'https://gib-api-proxy.mehmet49946.workers.dev';
 
 const server = new Server({
   name: 'gib-api-mcp',
-  version: '1.0.0',
+  version: '2.0.0',
 }, {
   capabilities: {
     tools: {},
@@ -22,219 +22,110 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
-        name: 'calculate_late_payment_interest',
-        description: 'GIB (Gelir İdaresi Başkanlığı) gecikme zammı/faizi hesaplama. Calculate late payment interest/penalty for Turkish tax payments.',
+        name: 'calculate_gecikme_zammi',
+        description: 'GIB Gecikme Zammı hesapla (6183 sayılı AATUHK m.51). Kesinleşmiş vergi borcu vadesinde ödenmezse, vade tarihinden fiili ödeme tarihine kadar aylık+günlük karma sistemle hesaplanır.',
         inputSchema: {
           type: 'object',
           properties: {
             odenecekMiktar: {
               type: 'string',
-              description: 'Ödenecek miktar (TL) / Amount to be paid (TRY). Örnek/Example: "1000.00"'
+              description: 'Borç tutarı (TL). Örnek: "1000.00"'
             },
             vadeTarihi: {
               type: 'string',
-              description: 'Vade tarihi / Due date (YYYYMMDD format). Örnek/Example: "20250101"'
+              description: 'Vade tarihi (YYYYMMDD). Örnek: "20260101"'
             },
             odemeTarihi: {
               type: 'string',
-              description: 'Ödeme tarihi / Payment date (YYYYMMDD format). Örnek/Example: "20250716"'
-            },
-            gecikmeTipi: {
-              type: 'integer',
-              description: 'Gecikme tipi / Delay type. 1: Gecikme Zammı, 2: Gecikme Faizi (varsayılan/default: 1)',
-              default: 1
+              description: 'Ödeme tarihi (YYYYMMDD). Örnek: "20260301"'
             }
           },
           required: ['odenecekMiktar', 'vadeTarihi', 'odemeTarihi']
         }
       },
       {
-        name: 'calculate_multiple_late_payments',
-        description: 'Birden fazla gecikme zammı/faizi hesapla. Calculate multiple late payment interests at once.',
+        name: 'calculate_gecikme_faizi',
+        description: 'GIB Gecikme Faizi hesapla (213 sayılı VUK m.112). İkmalen/resen/idarece yapılan tarhiyatlarda, normal vade tarihinden tahakkuk tarihine kadar sadece tam ay esasına göre hesaplanır.',
         inputSchema: {
           type: 'object',
           properties: {
-            odemeler: {
-              type: 'array',
-              description: 'Ödemeler listesi / List of payments',
-              items: {
-                type: 'object',
-                properties: {
-                  odenecekMiktar: {
-                    type: 'string',
-                    description: 'Ödenecek miktar (TL)'
-                  },
-                  vadeTarihi: {
-                    type: 'string',
-                    description: 'Vade tarihi (YYYYMMDD)'
-                  },
-                  odemeTarihi: {
-                    type: 'string',
-                    description: 'Ödeme tarihi (YYYYMMDD)'
-                  },
-                  gecikmeTipi: {
-                    type: 'integer',
-                    description: 'Gecikme tipi (1 veya 2)',
-                    default: 1
-                  }
-                },
-                required: ['odenecekMiktar', 'vadeTarihi', 'odemeTarihi']
-              }
+            odenecekMiktar: {
+              type: 'string',
+              description: 'Borç tutarı (TL). Örnek: "1000.00"'
+            },
+            vadeTarihi: {
+              type: 'string',
+              description: 'Normal vade tarihi (YYYYMMDD). Örnek: "20260101"'
+            },
+            odemeTarihi: {
+              type: 'string',
+              description: 'Tahakkuk/tarhiyat tarihi (YYYYMMDD). Örnek: "20260601"'
             }
           },
-          required: ['odemeler']
+          required: ['odenecekMiktar', 'vadeTarihi', 'odemeTarihi']
         }
       }
     ]
   };
 });
 
+async function callGibApi(endpoint, params) {
+  const response = await fetch(`${BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params)
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+function formatResult(result, tipiLabel) {
+  if (!result.hesaplamaList || !result.hesaplamaList[0]) {
+    throw new Error('Hesaplama sonucu alınamadı');
+  }
+
+  const h = result.hesaplamaList[0];
+  return `GİB ${tipiLabel} Hesaplama Sonucu:
+
+Ana Para: ${h.odenecekMiktar} TL
+Vade Tarihi: ${h.vadeTarihi}
+Ödeme Tarihi: ${h.odemeTarihi}
+Gecikme Oranı: ${h.hesaplananZamOrani}
+Gecikme Tutarı: ${h.hesaplananFaizTutari} TL
+Toplam Ödenecek: ${h.hesaplananMiktar} TL`;
+}
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name === 'calculate_late_payment_interest') {
-    const { odenecekMiktar, vadeTarihi, odemeTarihi, gecikmeTipi = 1 } = request.params.arguments;
-    
-    try {
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          data: {
-            data: [{
-              gecikmeTipi: gecikmeTipi,
-              odenecekMiktar: odenecekMiktar,
-              vadeTarihi: vadeTarihi,
-              odemeTarihi: odemeTarihi
-            }]
-          },
-          toBeLink: false
-        })
+  const { name, arguments: args } = request.params;
+
+  try {
+    if (name === 'calculate_gecikme_zammi') {
+      const result = await callGibApi('/api/gecikme-zammi', {
+        odenecekMiktar: args.odenecekMiktar,
+        vadeTarihi: args.vadeTarihi,
+        odemeTarihi: args.odemeTarihi
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error || response.statusText}`);
-      }
-
-      const result = await response.json();
-      
-      if (result.hesaplamaList && result.hesaplamaList[0]) {
-        const hesaplama = result.hesaplamaList[0];
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `GIB Gecikme ${hesaplama.gecikmeTipi} Hesaplama Sonucu:
-              
-Ana Para: ${hesaplama.odenecekMiktar} TL
-Vade Tarihi: ${hesaplama.vadeTarihi}
-Ödeme Tarihi: ${hesaplama.odemeTarihi}
-Gecikme Oranı: ${hesaplama.hesaplananZamOrani}
-Gecikme Tutarı: ${hesaplama.hesaplananFaizTutari} TL
-Toplam Ödenecek: ${hesaplama.hesaplananMiktar} TL`
-            }
-          ]
-        };
-      }
-      
-      throw new Error('Hesaplama sonucu alınamadı');
-      
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Hata: ${error.message}`
-          }
-        ],
-        isError: true
-      };
+      return { content: [{ type: 'text', text: formatResult(result, 'Gecikme Zammı') }] };
     }
-  }
-  
-  if (request.params.name === 'calculate_multiple_late_payments') {
-    const { odemeler } = request.params.arguments;
-    
-    try {
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          data: {
-            data: odemeler.map(odeme => ({
-              gecikmeTipi: odeme.gecikmeTipi || 1,
-              odenecekMiktar: odeme.odenecekMiktar,
-              vadeTarihi: odeme.vadeTarihi,
-              odemeTarihi: odeme.odemeTarihi
-            }))
-          },
-          toBeLink: false
-        })
+
+    if (name === 'calculate_gecikme_faizi') {
+      const result = await callGibApi('/api/gecikme-faizi', {
+        odenecekMiktar: args.odenecekMiktar,
+        vadeTarihi: args.vadeTarihi,
+        odemeTarihi: args.odemeTarihi
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`API Error: ${errorData.error || response.statusText}`);
-      }
-
-      const result = await response.json();
-      
-      if (result.hesaplamaList) {
-        let text = 'GIB Toplu Gecikme Hesaplama Sonuçları:\n\n';
-        
-        result.hesaplamaList.forEach((hesaplama, index) => {
-          text += `${index + 1}. Ödeme:\n`;
-          text += `   Ana Para: ${hesaplama.odenecekMiktar} TL\n`;
-          text += `   Vade: ${hesaplama.vadeTarihi} → Ödeme: ${hesaplama.odemeTarihi}\n`;
-          text += `   Oran: ${hesaplama.hesaplananZamOrani}\n`;
-          text += `   Gecikme: ${hesaplama.hesaplananFaizTutari} TL\n`;
-          text += `   Toplam: ${hesaplama.hesaplananMiktar} TL\n\n`;
-        });
-        
-        if (result.toplam) {
-          text += `GENEL TOPLAM:\n`;
-          text += `   Toplam Ana Para: ${result.toplam.toplamMiktar} TL\n`;
-          text += `   Toplam Gecikme: ${result.toplam.toplamZam} TL\n`;
-          text += `   Toplam Ödenecek: ${result.toplam.toplamOdenecekTutar} TL`;
-        }
-        
-        return {
-          content: [
-            {
-              type: 'text',
-              text: text
-            }
-          ]
-        };
-      }
-      
-      throw new Error('Hesaplama sonucu alınamadı');
-      
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Hata: ${error.message}`
-          }
-        ],
-        isError: true
-      };
+      return { content: [{ type: 'text', text: formatResult(result, 'Gecikme Faizi') }] };
     }
+
+    return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
+  } catch (error) {
+    return { content: [{ type: 'text', text: `Hata: ${error.message}` }], isError: true };
   }
-  
-  return {
-    content: [
-      {
-        type: 'text',
-        text: `Unknown tool: ${request.params.name}`
-      }
-    ],
-    isError: true
-  };
 });
 
 async function main() {
