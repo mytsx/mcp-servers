@@ -6,6 +6,7 @@ Fetch Gemini Code Assist reviews from GitHub PRs
 
 import asyncio
 import os
+import subprocess
 import sys
 import logging
 import json
@@ -25,10 +26,34 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _resolve_github_token() -> str:
+    """Resolve GitHub token: gh CLI first, then GITHUB_TOKEN env var."""
+    # 1) Try gh CLI
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            logger.info("GitHub token resolved via gh CLI")
+            return result.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 2) Fallback to env var
+    token = os.getenv("GITHUB_TOKEN", "")
+    if token:
+        logger.info("GitHub token resolved via GITHUB_TOKEN env var")
+    else:
+        logger.warning("No GitHub token found — gh CLI not available and GITHUB_TOKEN not set")
+    return token
+
+
 class GeminiPRReviewsMCPServer:
     def __init__(self):
         self.server = Server("gemini-reviews-mcp")
-        self.github_token = os.getenv("GITHUB_TOKEN")
+        self.github_token = _resolve_github_token()
         self.headers = {
             'Accept': 'application/vnd.github.v3+json',
         }

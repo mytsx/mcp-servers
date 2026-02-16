@@ -1,159 +1,191 @@
 # Gemini PR Reviews MCP Server
 
-MCP (Model Context Protocol) server for fetching Gemini Code Assist reviews from GitHub pull requests. This tool allows Claude Desktop to retrieve and analyze code reviews from Gemini Code Assist bot on GitHub PRs.
+[![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/gemini-reviews-mcp)](https://pypi.org/project/gemini-reviews-mcp/)
+
+Fetch [Gemini Code Assist](https://cloud.google.com/gemini/docs/codeassist/overview) PR reviews from GitHub. Auto-detects last PR, filters reviews after your last `/gemini review` comment, and returns raw JSON.
 
 ## Features
 
-- Fetch all Gemini Code Assist reviews from a GitHub PR
-- Get reviews after your last `/gemini review` comment (default behavior)
-- Smart defaults: auto-detect repository owner and last PR
-- GitHub token authentication support
-- Full pagination support for large PRs
-- Retrieves all comment types (reviews, line comments, issue comments)
-- Raw JSON output for maximum flexibility
-- Easy installation with provided script
+- **Auto-Auth** — Uses `gh` CLI token automatically, falls back to `GITHUB_TOKEN` env var
+- **Smart Defaults** — Auto-detects repository owner and last PR number
+- **Filtered Reviews** — Get only reviews after your last `/gemini review` comment
+- **All Comment Types** — PR reviews, line comments, and issue comments
+- **Full Pagination** — Handles large PRs with many comments
 
-## Installation
+## Quick Start
 
-### Option 1: Using uvx (Recommended)
+### Claude Code
 
-No installation required! Just configure Claude Desktop:
+```bash
+# If you have gh CLI authenticated, no token needed:
+claude mcp add gemini-reviews -- uvx gemini-reviews-mcp
+
+# Or with explicit token:
+claude mcp add gemini-reviews \
+  -e GITHUB_TOKEN="ghp_your_token" \
+  -- uvx gemini-reviews-mcp
+```
+
+### Claude Desktop
+
+Add to your config file:
+
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
-    "gemini-pr-reviews": {
+    "gemini-reviews": {
       "command": "uvx",
-      "args": ["gemini-reviews-mcp"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_your_token_here"
-      }
+      "args": ["gemini-reviews-mcp"]
     }
   }
 }
 ```
 
-### Option 2: Install from PyPI
+> If `gh` CLI is installed and authenticated, no `GITHUB_TOKEN` env var is needed.
 
-```bash
-pip install gemini-reviews-mcp
+### Cursor
+
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "gemini-reviews": {
+      "command": "uvx",
+      "args": ["gemini-reviews-mcp"]
+    }
+  }
+}
 ```
 
-### Option 3: Install from Source
+### Windsurf
+
+Add to Windsurf MCP config:
+
+```json
+{
+  "mcpServers": {
+    "gemini-reviews": {
+      "command": "uvx",
+      "args": ["gemini-reviews-mcp"]
+    }
+  }
+}
+```
+
+### VS Code
+
+Add to your VS Code settings (JSON):
+
+```json
+"mcp": {
+  "servers": {
+    "gemini-reviews": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["gemini-reviews-mcp"]
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "gemini-reviews": {
+      "command": "uvx",
+      "args": ["gemini-reviews-mcp"]
+    }
+  }
+}
+```
+
+### GitHub Copilot
+
+Add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "gemini-reviews": {
+      "command": "uvx",
+      "args": ["gemini-reviews-mcp"]
+    }
+  }
+}
+```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.gemini-reviews]
+command = "uvx"
+args = ["gemini-reviews-mcp"]
+```
+
+### Install from Source
 
 ```bash
 cd gemini-reviews-mcp
 pip install -e .
-# or
-./install.sh
 ```
 
-### GitHub Token Setup
+## Authentication
 
-1. Go to https://github.com/settings/tokens
-2. Click "Generate new token (classic)"
-3. Give it a name and select the `repo` scope
-4. Copy the generated token
+The server resolves GitHub authentication in this order:
 
-Create a `.env` file:
-```bash
-GITHUB_TOKEN=your_actual_github_token_here
-```
+1. **`gh` CLI** (preferred) — If [GitHub CLI](https://cli.github.com/) is installed and authenticated (`gh auth login`), the token is obtained automatically via `gh auth token`. No configuration needed.
 
-## Configuration for Claude Desktop
+2. **`GITHUB_TOKEN` env var** (fallback) — Set manually if `gh` CLI is not available:
+   ```bash
+   # Create a token at https://github.com/settings/tokens with `repo` scope
+   export GITHUB_TOKEN="ghp_your_token_here"
+   ```
 
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+3. **No token** — Works for public repos only, with 60 requests/hour rate limit.
 
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+## Tool
 
-```json
-{
-  "mcpServers": {
-    "gemini-pr-reviews": {
-      "command": "uvx",
-      "args": ["gemini-reviews-mcp"],
-      "env": {
-        "GITHUB_TOKEN": "ghp_your_token_here"
-      }
-    }
-  }
-}
-```
+<details>
+<summary><code>get_gemini_reviews</code> — Fetch Gemini Code Assist PR reviews</summary>
 
-## Available Tool
+Get Gemini Code Assist reviews from a GitHub PR. By default, fetches only reviews after your last `/gemini review` comment.
 
-### `get_gemini_reviews`
-Get Gemini Code Assist reviews from a GitHub PR. Can fetch all reviews or only those after your last '/gemini review' comment.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo` | string | Yes | Repository name (`repo`) or full path (`owner/repo`) |
+| `pr` | integer | No | PR number (uses last PR if omitted) |
+| `after_last_review` | boolean | No | Only fetch reviews after your last `/gemini review` comment (default: true) |
+| `username` | string | No | GitHub username for filtering (defaults to authenticated user) |
 
-**Parameters:**
-- `repo` (string, required): Repository name or owner/repo format
-  - If just repo name: `"YtbMp3Indir"` - uses authenticated user as owner
-  - Full format: `"owner/RepoName"`
-- `pr` (integer, optional): PR number (uses last PR if not specified)
-- `after_last_review` (boolean, optional): If true, only fetch reviews after your last '/gemini review' comment (default: **true**)
-- `username` (string, optional): GitHub username (only used when after_last_review is true, defaults to authenticated user)
-
-**Note:** The tool returns raw JSON data for maximum flexibility. By default, it fetches reviews after your last '/gemini review' comment.
+</details>
 
 ## Usage Examples
 
-1. **Simplest usage (most common) - Get reviews after your last comment:**
-   ```
-   Use get_gemini_reviews for repo YtbMp3Indir
-   ```
-   This automatically:
-   - Uses your GitHub username as owner
-   - Finds the last PR
-   - Gets reviews after your last '/gemini review' comment
-
-2. **Specify a PR number:**
-   ```
-   Use get_gemini_reviews for repo YtbMp3Indir pr 2
-   ```
-
-3. **Get ALL reviews (not just after your last comment):**
-   ```
-   Use get_gemini_reviews for repo YtbMp3Indir with after_last_review false
-   ```
-
-4. **Use full repo path (if needed):**
-   ```
-   Use get_gemini_reviews for repo someoneelse/TheirRepo
-   ```
-
-## How It Works
-
-The server fetches Gemini Code Assist comments from GitHub PRs using the GitHub API v3. It supports three types of comments:
-- **Reviews**: General PR reviews with overall feedback
-- **Line Comments**: Code-specific comments on particular lines
-- **Issue Comments**: General discussion comments on the PR
-
-When `after_last_review` is true (default), the tool:
-1. Finds your last `/gemini review` comment in the PR
-2. Fetches all Gemini bot responses after that timestamp
-3. Returns them sorted by type and date
-
-## Notes
-
-- The server requires Python 3.7+
-- GitHub API rate limits apply (5000 requests/hour with token, 60 without)
-- Authentication via GitHub token is highly recommended
-- The server returns raw JSON data for maximum flexibility
-- All API calls use pagination to handle large PRs
-- Supports typo variants like "/genimi review"
-
-## Testing
-
-Run the test script to verify the server is working:
-```bash
-python3 test_raw_output.py
 ```
+# Simplest — auto-detect owner, last PR, filtered reviews
+Use get_gemini_reviews for repo MyProject
 
-## Standalone Script
+# Specific PR
+Use get_gemini_reviews for repo MyProject pr 42
 
-You can also use the original CLI script directly:
-```bash
-python3 gemini_pr_reviews.py --repo owner/repo --pr 123
+# Get ALL reviews (not just after last comment)
+Use get_gemini_reviews for repo MyProject with after_last_review false
+
+# Full repo path
+Use get_gemini_reviews for repo someone/TheirRepo
 ```
 
 ## License
