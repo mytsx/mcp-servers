@@ -1,11 +1,11 @@
 {
-  "name": "ssh-terminal-mcp",
+  "name": "asger-terminal-mcp",
   "version": "1.0.0",
   "description": "MCP server for SSH terminal automation with screenshot and OCR support",
   "type": "module",
   "main": "server.js",
   "bin": {
-    "ssh-terminal-mcp": "server.js"
+    "asger-terminal-mcp": "server.js"
   },
   "scripts": {
     "start": "node server.js"

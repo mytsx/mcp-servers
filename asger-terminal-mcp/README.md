@@ -29,7 +29,7 @@ No installation required! Just configure Claude Desktop:
   "mcpServers": {
     "ssh-terminal": {
       "command": "npx",
-      "args": ["-y", "ssh-terminal-mcp"],
+      "args": ["-y", "asger-terminal-mcp"],
       "env": {
         "TERMINAL_URL": "https://your-web-terminal-url"
       }
@@ -41,13 +41,13 @@ No installation required! Just configure Claude Desktop:
 ### Option 2: Install from npm
 
 ```bash
-npm install -g ssh-terminal-mcp
+npm install -g asger-terminal-mcp
 ```
 
 ### Option 3: Install from Source
 
 ```bash
-cd ssh-terminal-mcp
+cd asger-terminal-mcp
 npm install
 npx playwright install chromium
 cp .env.example .env
@@ -67,7 +67,7 @@ cp .env.example .env
   "mcpServers": {
     "ssh-terminal": {
       "command": "npx",
-      "args": ["-y", "ssh-terminal-mcp"]
+      "args": ["-y", "asger-terminal-mcp"]
     }
   }
 }

@@ -67,7 +67,7 @@ pip install -e .
     },
     "ssh-terminal": {
       "command": "npx",
-      "args": ["-y", "ssh-terminal-mcp"],
+      "args": ["-y", "asger-terminal-mcp"],
       "env": {
         "TERMINAL_URL": "https://your-web-terminal-url"
       }
@@ -109,7 +109,7 @@ pip install -e .
 | Server | Description | Language | Status | Documentation |
 |--------|-------------|----------|--------|---------------|
 | [**SSH Python MCP**](./ssh-mcp-server) | Remote command execution with logging and dashboard | Python | ✅ Active | [README](./ssh-mcp-server/README.md) |
-| [**SSH Terminal MCP**](./ssh-terminal-mcp) | Interactive terminal with screenshot and OCR support | Node.js | ✅ Active | [README](./ssh-terminal-mcp/README.md) |
+| [**Asger Terminal MCP**](./asger-terminal-mcp) | Interactive terminal with screenshot and OCR support | Node.js | ✅ Active | [README](./asger-terminal-mcp/README.md) |
 
 **Features:**
 - Remote command execution
@@ -151,7 +151,7 @@ mcp-servers/
 ├── postgresql-mcp-server/    # PostgreSQL MCP server (Python)
 ├── oracle-mcp-server/         # Oracle MCP server (Python)
 ├── ssh-mcp-server/            # SSH MCP server (Python)
-├── ssh-terminal-mcp/          # SSH Terminal MCP (Node.js)
+├── asger-terminal-mcp/          # Asger Terminal MCP (Node.js)
 ├── mcp-server-git-extended/   # Git Extended MCP (Python)
 ├── gh-tool/                   # GitHub PR Reviews (Node.js)
 ├── gib-api-mcp/              # GİB API MCP (Node.js)
@@ -205,9 +205,8 @@ pip install -r requirements.txt
 #### Node.js Servers
 
 ```bash
-cd ssh-terminal-mcp
+cd asger-terminal-mcp  # Asger Terminal MCP
 npm install
-npm run build
 ```
 
 ## 🛠️ Development
