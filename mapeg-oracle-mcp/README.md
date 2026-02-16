@@ -106,6 +106,55 @@ Add to your VS Code settings (JSON):
 }
 ```
 
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mapeg-oracle-mcp"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+      }
+    }
+  }
+}
+```
+
+### GitHub Copilot
+
+Add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "oracle": {
+      "command": "uvx",
+      "args": ["mapeg-oracle-mcp"],
+      "env": {
+        "ORACLE_CONNECTION_STRING": "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+      }
+    }
+  }
+}
+```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.oracle]
+command = "uvx"
+args = ["mapeg-oracle-mcp"]
+
+[mcp_servers.oracle.env]
+ORACLE_CONNECTION_STRING = "User Id=myuser;Password=mypass;Data Source=host:1521/service"
+```
+
 ### Install from Source
 
 ```bash

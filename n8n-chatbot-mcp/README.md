@@ -101,6 +101,55 @@ Add to your VS Code settings (JSON):
 }
 ```
 
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "my-chatbot": {
+      "command": "uvx",
+      "args": ["n8n-chatbot-mcp"],
+      "env": {
+        "N8N_CHATBOT_URL": "https://n8n.example.com/webhook/my-bot/chat"
+      }
+    }
+  }
+}
+```
+
+### GitHub Copilot
+
+Add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "my-chatbot": {
+      "command": "uvx",
+      "args": ["n8n-chatbot-mcp"],
+      "env": {
+        "N8N_CHATBOT_URL": "https://n8n.example.com/webhook/my-bot/chat"
+      }
+    }
+  }
+}
+```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.my-chatbot]
+command = "uvx"
+args = ["n8n-chatbot-mcp"]
+
+[mcp_servers.my-chatbot.env]
+N8N_CHATBOT_URL = "https://n8n.example.com/webhook/my-bot/chat"
+```
+
 ### Install from Source
 
 ```bash

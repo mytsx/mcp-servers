@@ -123,6 +123,67 @@ Add to your VS Code settings (JSON):
 }
 ```
 
+### Gemini CLI
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
+```
+
+### GitHub Copilot
+
+Add to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "uvx",
+      "args": ["mapeg-postgres-mcp"],
+      "env": {
+        "DB_HOST": "localhost",
+        "DB_PORT": "5432",
+        "DB_NAME": "mydb",
+        "DB_USER": "postgres",
+        "DB_PASSWORD": "secret"
+      }
+    }
+  }
+}
+```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.postgres]
+command = "uvx"
+args = ["mapeg-postgres-mcp"]
+
+[mcp_servers.postgres.env]
+DB_HOST = "localhost"
+DB_PORT = "5432"
+DB_NAME = "mydb"
+DB_USER = "postgres"
+DB_PASSWORD = "secret"
+```
+
 ### Install from Source
 
 ```bash
