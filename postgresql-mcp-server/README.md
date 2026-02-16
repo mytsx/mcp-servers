@@ -25,7 +25,7 @@ No installation required! Just configure Claude Desktop:
   "mcpServers": {
     "postgres": {
       "command": "uvx",
-      "args": ["mcp-server-postgres"],
+      "args": ["mapeg-postgres-mcp"],
       "env": {
         "DB_HOST": "localhost",
         "DB_PORT": "5432",
@@ -41,7 +41,7 @@ No installation required! Just configure Claude Desktop:
 ### Option 2: Install from PyPI
 
 ```bash
-pip install mcp-server-postgres
+pip install mapeg-postgres-mcp
 ```
 
 ### Option 3: Install from Source / Kaynak Koddan Kurulum
@@ -64,7 +64,7 @@ pip install -e .
   "mcpServers": {
     "postgres": {
       "command": "uvx",
-      "args": ["mcp-server-postgres"],
+      "args": ["mapeg-postgres-mcp"],
       "env": {
         "DB_HOST": "localhost",
         "DB_PORT": "5432",

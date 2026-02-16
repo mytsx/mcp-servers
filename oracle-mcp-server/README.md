@@ -27,7 +27,7 @@ No installation required! Just configure Claude Desktop:
   "mcpServers": {
     "oracle": {
       "command": "uvx",
-      "args": ["mcp-server-oracle"],
+      "args": ["mapeg-oracle-mcp"],
       "env": {
         "ORACLE_CONNECTION_STRING": "User Id=username;Password=password;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=hostname)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=service)))"
       }
@@ -39,7 +39,7 @@ No installation required! Just configure Claude Desktop:
 ### Option 2: Install from PyPI
 
 ```bash
-pip install mcp-server-oracle
+pip install mapeg-oracle-mcp
 ```
 
 ### Option 3: Install from Source / Kaynak Koddan Kurulum
@@ -62,7 +62,7 @@ pip install -e .
   "mcpServers": {
     "oracle": {
       "command": "uvx",
-      "args": ["mcp-server-oracle"],
+      "args": ["mapeg-oracle-mcp"],
       "env": {
         "ORACLE_CONNECTION_STRING": "User Id=MYUSER;Password=MYPASS;Data Source=(DESCRIPTION=(ADDRESS=(PROTOCOL=tcp)(HOST=localhost)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
       }

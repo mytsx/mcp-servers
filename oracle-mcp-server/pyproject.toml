@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-server-oracle"
+name = "mapeg-oracle-mcp"
 version = "1.0.0"
 description = "Oracle Database MCP server for Model Context Protocol"
 readme = "README.md"
@@ -40,12 +40,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/mcp-server-oracle"
-Repository = "https://github.com/yourusername/mcp-server-oracle"
-Issues = "https://github.com/yourusername/mcp-server-oracle/issues"
+Homepage = "https://github.com/mytsx/mcp-servers"
+Repository = "https://github.com/mytsx/mcp-servers"
+Issues = "https://github.com/mytsx/mcp-servers/issues"
 
 [project.scripts]
-mcp-server-oracle = "mcp_server_oracle.__main__:run"
+mapeg-oracle-mcp = "mcp_server_oracle.__main__:run"
 
 [tool.setuptools]
 packages = ["mcp_server_oracle"]

@@ -22,8 +22,8 @@ Each server can be installed and used independently:
 
 ```bash
 # Using uvx (recommended - no installation needed)
-uvx mcp-server-postgres
-uvx mcp-server-oracle
+uvx mapeg-postgres-mcp
+uvx mapeg-oracle-mcp
 
 # Or install from source
 cd postgresql-mcp-server
@@ -40,7 +40,7 @@ pip install -e .
   "mcpServers": {
     "postgres": {
       "command": "uvx",
-      "args": ["mcp-server-postgres"],
+      "args": ["mapeg-postgres-mcp"],
       "env": {
         "DB_HOST": "localhost",
         "DB_PORT": "5432",
@@ -51,7 +51,7 @@ pip install -e .
     },
     "oracle": {
       "command": "uvx",
-      "args": ["mcp-server-oracle"],
+      "args": ["mapeg-oracle-mcp"],
       "env": {
         "ORACLE_CONNECTION_STRING": "User Id=user;Password=pass;Data Source=..."
       }
@@ -174,7 +174,7 @@ No installation or virtual environment needed! Just configure Claude Desktop:
   "mcpServers": {
     "postgres": {
       "command": "uvx",
-      "args": ["mcp-server-postgres"]
+      "args": ["mapeg-postgres-mcp"]
     }
   }
 }
@@ -184,8 +184,8 @@ No installation or virtual environment needed! Just configure Claude Desktop:
 
 ```bash
 # Python servers
-pip install mcp-server-postgres
-pip install mcp-server-oracle
+pip install mapeg-postgres-mcp
+pip install mapeg-oracle-mcp
 
 # After publishing to PyPI
 ```

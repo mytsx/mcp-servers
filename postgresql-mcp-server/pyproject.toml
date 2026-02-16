@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-server-postgres"
+name = "mapeg-postgres-mcp"
 version = "1.0.0"
 description = "PostgreSQL MCP server for Model Context Protocol"
 readme = "README.md"
@@ -40,12 +40,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/mcp-server-postgres"
-Repository = "https://github.com/yourusername/mcp-server-postgres"
-Issues = "https://github.com/yourusername/mcp-server-postgres/issues"
+Homepage = "https://github.com/mytsx/mcp-servers"
+Repository = "https://github.com/mytsx/mcp-servers"
+Issues = "https://github.com/mytsx/mcp-servers/issues"
 
 [project.scripts]
-mcp-server-postgres = "mcp_server_postgres.__main__:run"
+mapeg-postgres-mcp = "mcp_server_postgres.__main__:run"
 
 [tool.setuptools]
 packages = ["mcp_server_postgres"]
