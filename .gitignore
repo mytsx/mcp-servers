@@ -44,5 +44,8 @@ temp-*.png
 # Session files
 session-state.json
 
+# OCR data
+*.traineddata
+
 # Firebase
 firebase-debug.log

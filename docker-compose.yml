@@ -1,0 +1,55 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: mcp-test-postgres
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: testdb
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  oracle:
+    image: gvenzl/oracle-xe:21-slim
+    container_name: mcp-test-oracle
+    environment:
+      ORACLE_PASSWORD: testpass
+      APP_USER: testuser
+      APP_USER_PASSWORD: testpass
+    ports:
+      - "1522:1521"
+    volumes:
+      - ora_data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: mcp-test-ssh
+    environment:
+      PUID: 1000
+      PGID: 1000
+      USER_NAME: testuser
+      USER_PASSWORD: testpass
+      PASSWORD_ACCESS: "true"
+    ports:
+      - "2222:2222"
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -tlnp | grep 2222"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pg_data:
+  ora_data:
