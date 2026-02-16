@@ -23,7 +23,7 @@ from mcp.types import (
 )
 from dotenv import load_dotenv
 
-from .query_logger import direct_log_query_execution
+from .query_logger import direct_log_query_execution, get_query_history
 
 # Load environment variables
 load_dotenv()
@@ -274,25 +274,51 @@ class PostgreSQLMCPServer:
                         },
                         "required": ["sql"]
                     }
+                ),
+                Tool(
+                    name="get_query_history",
+                    description="Get recent query history for this database connection. Shows past queries, execution times, statuses and errors. Useful for reviewing what was run before.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of recent queries to return (default: 20)",
+                                "default": 20
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["success", "error"],
+                                "description": "Filter by status (optional - omit for all)"
+                            },
+                            "tool_name": {
+                                "type": "string",
+                                "description": "Filter by tool name, e.g. 'execute_sql', 'natural_language_query' (optional)"
+                            }
+                        }
+                    }
                 )
             ]
-        
+
         @self.server.call_tool()
         async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             """Handle tool calls"""
+            if name == "get_query_history":
+                return self.handle_get_query_history(arguments)
+
             if not self.connection:
                 await self.connect_to_postgresql()
-            
+
             try:
                 if name == "natural_language_query":
                     return await self.handle_natural_language_query(arguments["query"])
-                
+
                 elif name == "execute_sql":
                     return await self.handle_sql_query(arguments["sql"], arguments.get("limit", 100))
-                
+
                 elif name == "describe_table":
                     return await self.handle_describe_table(arguments["table_name"])
-                
+
                 elif name == "smart_query":
                     return await self.handle_smart_query(arguments["question"])
 
@@ -722,6 +748,37 @@ Gelişmiş sorgular için:
             return [TextContent(type="text", text=f"❌ EXPLAIN error: {str(e)}")]
         finally:
             cursor.close()
+
+    def handle_get_query_history(self, arguments: Dict[str, Any]) -> List[TextContent]:
+        """Return recent query history for this db+workspace"""
+        logs = get_query_history(
+            db_identifier=self.db_identifier,
+            workspace_path=self.workspace_path,
+            limit=arguments.get("limit", 20),
+            status=arguments.get("status", ""),
+            tool_name=arguments.get("tool_name", ""),
+        )
+
+        if not logs:
+            return [TextContent(type="text", text="No query history found for this database/workspace.")]
+
+        result = f"Query History ({len(logs)} entries):\n"
+        result += f"DB: {self.db_identifier} | Workspace: {self.workspace_path}\n"
+        result += "=" * 70 + "\n\n"
+
+        for log in logs:
+            status_icon = "OK" if log["status"] == "success" else "ERR"
+            time_str = log["timestamp"][:19].replace("T", " ")
+            result += f"[{status_icon}] {time_str} | {log['tool_name']} | {log['execution_time_ms']:.0f}ms | {log['row_count']} rows\n"
+            query_preview = log["query_text"][:120].replace("\n", " ")
+            result += f"     {query_preview}\n"
+            if log["error_message"]:
+                result += f"     Error: {log['error_message'][:100]}\n"
+            if log["user_query"]:
+                result += f"     User: {log['user_query'][:100]}\n"
+            result += "\n"
+
+        return [TextContent(type="text", text=result)]
 
 async def main():
     """Main function to run the MCP server"""

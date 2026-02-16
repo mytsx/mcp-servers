@@ -91,3 +91,44 @@ def direct_log_query_execution(
         return log_id
     except Exception:
         return 0
+
+
+def get_query_history(
+    db_identifier: str,
+    workspace_path: str,
+    limit: int = 20,
+    status: str = "",
+    tool_name: str = "",
+) -> list:
+    """Retrieve recent query logs scoped to this server's db+workspace."""
+    try:
+        db_path = _get_db_path()
+        if not db_path.exists():
+            return []
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        _ensure_table(conn)
+
+        where_parts = ["db_identifier = ?", "workspace_path = ?"]
+        params: list = [db_identifier, workspace_path]
+
+        if status:
+            where_parts.append("status = ?")
+            params.append(status)
+        if tool_name:
+            where_parts.append("tool_name = ?")
+            params.append(tool_name)
+
+        where_clause = " WHERE " + " AND ".join(where_parts)
+        params.append(limit)
+
+        rows = conn.execute(
+            f"SELECT id, timestamp, server_type, tool_name, query_text, "
+            f"execution_time_ms, status, row_count, error_message, user_query "
+            f"FROM query_logs{where_clause} ORDER BY timestamp DESC LIMIT ?",
+            params,
+        ).fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
