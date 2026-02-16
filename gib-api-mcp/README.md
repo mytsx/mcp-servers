@@ -11,14 +11,24 @@ GIB (Gelir İdaresi Başkanlığı) gecikme zammı ve gecikme faizi hesaplama MC
 
 - **Gecikme Zammı** — Kesinleşmiş vergi borcu için aylık+günlük karma hesaplama (AATUHK m.51)
 - **Gecikme Faizi** — İkmalen/resen tarhiyatlarda tam ay esasına göre hesaplama (VUK m.112)
-- **Zero Config** — Env var gerekmez, direkt çalışır
+- **Kendi Worker'ın** — Kendi Cloudflare Worker'ını deploy et, URL'i env var olarak ver
+
+## Prerequisites
+
+Bu MCP server'ı kullanmak için kendi GİB API proxy worker'ınızı deploy etmeniz gerekir:
+
+1. [gib-gecikme-zammi-faizi](https://github.com/mytsx/gib-gecikme-zammi-faizi) reposunu fork edin
+2. Cloudflare Workers'a deploy edin
+3. Worker URL'inizi `GIB_API_URL` olarak ayarlayın
 
 ## Quick Start
 
 ### Claude Code
 
 ```bash
-claude mcp add gib-api -- npx -y gib-api-mcp
+claude mcp add gib-api \
+  -e GIB_API_URL="https://your-worker.your-account.workers.dev" \
+  -- npx -y gib-api-mcp
 ```
 
 ### Claude Desktop
@@ -33,7 +43,10 @@ Add to your config file:
   "mcpServers": {
     "gib-api": {
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -48,7 +61,10 @@ Add to `~/.cursor/mcp.json`:
   "mcpServers": {
     "gib-api": {
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -63,7 +79,10 @@ Add to Windsurf MCP config:
   "mcpServers": {
     "gib-api": {
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -79,7 +98,10 @@ Add to your VS Code settings (JSON):
     "gib-api": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -94,7 +116,10 @@ Add to `~/.gemini/settings.json`:
   "mcpServers": {
     "gib-api": {
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -109,7 +134,10 @@ Add to `~/.copilot/mcp-config.json`:
   "mcpServers": {
     "gib-api": {
       "command": "npx",
-      "args": ["-y", "gib-api-mcp"]
+      "args": ["-y", "gib-api-mcp"],
+      "env": {
+        "GIB_API_URL": "https://your-worker.your-account.workers.dev"
+      }
     }
   }
 }
@@ -123,6 +151,9 @@ Add to `~/.codex/config.toml`:
 [mcp_servers.gib-api]
 command = "npx"
 args = ["-y", "gib-api-mcp"]
+
+[mcp_servers.gib-api.env]
+GIB_API_URL = "https://your-worker.your-account.workers.dev"
 ```
 
 ### Install from Source
@@ -131,6 +162,12 @@ args = ["-y", "gib-api-mcp"]
 cd gib-api-mcp
 npm install
 ```
+
+## Configuration
+
+| Environment Variable | Required | Description |
+|---------------------|----------|-------------|
+| `GIB_API_URL` | Yes | Kendi Cloudflare Worker proxy URL'iniz. Deploy: [gib-gecikme-zammi-faizi](https://github.com/mytsx/gib-gecikme-zammi-faizi) |
 
 ## Tools
 
@@ -169,10 +206,6 @@ Kesinleşmiş vergi borcu vadesinde ödenmezse uygulanan gecikme zammını hesap
 # Gecikme faizi
 5000 TL'lik ikmalen tarhiyat, normal vade 1 Mart 2026, tahakkuk tarihi 1 Eylül 2026
 ```
-
-## API
-
-Proxy: [`gib-gecikme-zammi-faizi`](https://github.com/mytsx/gib-gecikme-zammi-faizi) — Cloudflare Worker üzerinden GİB Dijital Vergi Dairesi'ne bağlanır.
 
 ## License
 

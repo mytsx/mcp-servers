@@ -7,7 +7,16 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import fetch from 'node-fetch';
 
-const BASE_URL = 'https://gib-api-proxy.mehmet49946.workers.dev';
+const BASE_URL = process.env.GIB_API_URL;
+
+if (!BASE_URL) {
+  console.error(
+    'HATA: GIB_API_URL environment variable zorunludur.\n' +
+    'Kendi worker\'ınızı deploy edin: https://github.com/mytsx/gib-gecikme-zammi-faizi\n' +
+    'Örnek: GIB_API_URL=https://your-worker.your-account.workers.dev'
+  );
+  process.exit(1);
+}
 
 const server = new Server({
   name: 'gib-api-mcp',
