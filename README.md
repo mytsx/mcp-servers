@@ -41,7 +41,7 @@ A collection of [Model Context Protocol](https://modelcontextprotocol.io) server
 | Server | Package | Description |
 |--------|---------|-------------|
 | [Gemini Reviews MCP](./gemini-reviews-mcp) | [`gemini-reviews-mcp`](https://pypi.org/project/gemini-reviews-mcp/) | Fetch Gemini Code Assist PR reviews from GitHub |
-| [Agent Chat MCP](./agent-chat) | — | Multi-room chat for Claude Code agent instances |
+| [Agent Chat MCP](./agent-chat) | [`agent-chat-mcp`](https://pypi.org/project/agent-chat-mcp/) | Multi-room chat for Claude Code agent instances |
 
 ## Quick Start
 
@@ -53,6 +53,9 @@ uvx mapeg-postgres-mcp
 uvx mapeg-oracle-mcp
 uvx n8n-chatbot-mcp
 uvx docusaurus-mcp
+uvx gemini-reviews-mcp
+uvx mcp-server-ssh
+uvx agent-chat-mcp
 
 # Node.js servers
 npx -y asger-terminal-mcp
