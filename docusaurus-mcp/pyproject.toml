@@ -9,13 +9,27 @@ description = "Generic MCP server for any Docusaurus documentation site - search
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+authors = [
+    {name = "mytsx"}
+]
 keywords = ["mcp", "model-context-protocol", "docusaurus", "documentation", "search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "mcp[cli]>=1.0.0",
     "httpx>=0.27.0",
     "markdownify>=0.14.1",
     "beautifulsoup4>=4.12.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mytsx/mcp-servers"
+Repository = "https://github.com/mytsx/mcp-servers"
+Issues = "https://github.com/mytsx/mcp-servers/issues"
 
 [project.scripts]
 docusaurus-mcp = "docusaurus_mcp.__main__:run"
