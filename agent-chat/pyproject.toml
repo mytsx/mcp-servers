@@ -9,10 +9,24 @@ description = "Agent Chat Room MCP server - Allows multiple Claude Code agents t
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+authors = [
+    {name = "mytsx"}
+]
 keywords = ["mcp", "model-context-protocol", "agent", "chat", "multi-agent", "claude"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
 dependencies = [
     "mcp[cli]>=1.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/mytsx/mcp-servers"
+Repository = "https://github.com/mytsx/mcp-servers"
+Issues = "https://github.com/mytsx/mcp-servers/issues"
 
 [project.scripts]
 agent-chat-mcp = "agent_chat_mcp.__main__:run"
