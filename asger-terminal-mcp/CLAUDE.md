@@ -4,89 +4,50 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-This is an MCP (Model Context Protocol) server that enables AI assistants to interact with SSH terminals through web browsers using Playwright automation and OCR text extraction.
+MCP server that enables AI assistants to interact with SSH terminals (ASGER/Guacamole) through Playwright browser automation. Uses a 3-layer hybrid text extraction: Guacamole buffer → base64 encoding → OCR fallback.
 
 ## Commands
 
 ### Development
 ```bash
-# Install dependencies (including Playwright browsers)
 npm install
 npx playwright install chromium
-
-# Setup environment
 cp .env.example .env
-# Edit .env and set TERMINAL_URL
-
-# Start the MCP server
 npm start
-
-# Run basic test
-node test.js
-```
-
-### Testing Individual Components
-```bash
-# Test manual login flow
-node test-manual.js
-
-# Test screenshot functionality
-node test-screenshot.js
-
-# Test OCR integration
-node test-ocr-integration.js
 ```
 
 ## Architecture
 
-### Core Components
+### Hybrid Text Extraction (v2.0)
 
-1. **MCP Server Implementation** (`server.js`):
-   - Uses `@modelcontextprotocol/sdk` v0.5.0
-   - Implements StdioServerTransport for Claude Desktop communication
-   - Maintains global browser state (browser, context, page)
-   - Session persistence through `session-state.json`
+Terminal renders to HTML5 Canvas (not DOM), so direct text access is impossible. Three extraction layers are tried in order:
 
-2. **Browser Automation**:
-   - Playwright with Chromium in non-headless mode
-   - Manual authentication workflow (no credential automation)
-   - Session state saved/loaded to avoid repeated logins
+1. **Layer 1 - Guacamole Buffer**: Injects JS into page to find Guacamole client's clipboard/text buffer. Fastest and most accurate when available.
+2. **Layer 2 - Base64 Encoding**: Wraps command output to temp file, base64-encodes it, reads via OCR. Base64 charset (A-Za-z0-9+/=) is OCR-friendly. Decodes server-side for exact output. Returns exit code.
+3. **Layer 3 - OCR Fallback**: Screenshot + Tesseract.js. Improved settings but still subject to typical OCR errors.
 
-3. **Text Extraction Strategy**:
-   - Terminal renders in Canvas element (not DOM text)
-   - Screenshots captured after command execution
-   - Tesseract.js OCR extracts text from screenshots
-   - Clear-before-command pattern for cleaner outputs
+### MCP Tools
+
+- `open_terminal`: Opens browser with terminal URL
+- `save_session`: Persists browser session after manual login
+- `execute_command`: Runs command (no output capture)
+- `execute_and_read`: **Main tool** - runs command and returns output via hybrid extraction. Params: `method` (auto/buffer/base64/ocr), `wait_ms` (custom wait time)
+- `take_screenshot`: Captures terminal screenshot
+- `extract_text`: Extracts text from current view (buffer first, then OCR)
+- `disconnect`: Closes browser connection
+- `clear_session`: Removes saved session data
 
 ### Key Design Decisions
 
 - **Security First**: Never store credentials, all authentication is manual
-- **Session Persistence**: Browser cookies/storage saved locally
-- **OCR Approach**: Terminal Canvas rendering requires image-based text extraction
+- **Hybrid Extraction**: buffer→base64→ocr cascade for reliability
+- **Structured Output**: Returns method used, exit code, and screenshot path
 - **Turkish Language**: Tool descriptions and messages are in Turkish
-
-### MCP Tools Available
-
-- `open_terminal`: Opens browser with terminal URL
-- `save_session`: Persists browser session after manual login
-- `execute_command`: Runs command with optional screen clear
-- `execute_and_read`: Executes command and returns OCR-extracted output
-- `take_screenshot`: Captures terminal screenshot
-- `extract_text`: Runs OCR on current terminal view
-- `disconnect`: Closes browser connection
-- `clear_session`: Removes saved session data
-
-## Important Files to Ignore
-
-The `.gitignore` is configured to exclude:
-- `session-state.json` (browser session data)
-- `*.png` files (screenshots)
-- `test-*.js` files (may contain sensitive test data)
-- `.env` files
 
 ## Known Limitations
 
-- OCR accuracy depends on terminal font and clarity
+- Guacamole buffer (Layer 1) may not be accessible on all ASGER deployments
+- Base64 (Layer 2) runs the command twice (once to execute, once to read encoded output)
+- OCR (Layer 3) still has character confusion issues (0/O, 1/l/I, special chars)
 - Canvas-based terminals prevent direct DOM text access
 - Manual login required on first use or session expiry
-- Turkish language in tool descriptions (by design)
