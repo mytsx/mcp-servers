@@ -1,7 +1,7 @@
 {
   "name": "asger-terminal-mcp",
-  "version": "2.0.0",
-  "description": "MCP server for SSH terminal automation with hybrid text extraction (hex + OCR)",
+  "version": "1.0.0",
+  "description": "MCP server for SSH terminal automation with screenshot and OCR support",
   "type": "module",
   "main": "server.js",
   "bin": {
