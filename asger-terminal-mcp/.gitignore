@@ -9,6 +9,7 @@ credentials.json
 .env
 .env.local
 .env.*
+!.env.example
 
 # Screenshots ve geçici dosyalar
 *.png

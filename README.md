@@ -24,6 +24,17 @@ serving 2025-era clients from the same process. What that buys you, across the b
 
 See [MIGRATION-V2.md](./MIGRATION-V2.md) for the per-server record of what changed.
 
+## Tests
+
+```bash
+./scripts/run-tests.sh
+```
+
+Each server has its own suite: `pytest` for the Python servers, `npm test` for the Node ones.
+The PostgreSQL and Oracle suites need a live database and skip themselves when one is not
+configured — `docker-compose.yml` brings up both, and the script's header has the environment
+variables to export.
+
 ## Servers
 
 ### Database
