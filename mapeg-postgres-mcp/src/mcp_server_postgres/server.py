@@ -329,7 +329,10 @@ class Database:
             user=os.getenv("DB_USER", "postgres"),
             password=os.getenv("DB_PASSWORD", "postgres"),
         )
-        self.connection.set_session(autocommit=True)
+        # In read-only mode the database enforces it, not just the classifier:
+        # a plain `SELECT destructive_function()` is a write the statement text
+        # cannot be read to reveal. PostgreSQL refuses it outright here.
+        self.connection.set_session(autocommit=True, readonly=self.read_only)
 
     async def connect(self) -> None:
         try:
@@ -852,7 +855,11 @@ async def explain_query(
     title="Sorgu geçmişi",
     description="Recent queries run against this database from this workspace, with timings, "
     "statuses and errors.",
-    annotations=_READ_ONLY,
+    # Not read-only: reading the history opens the local history database, which
+    # creates its directory and runs any pending schema migration on the way in.
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    ),
 )
 def get_query_history_tool(
     ctx: Context[AppContext],

@@ -81,9 +81,16 @@ function requirePage() {
   return page;
 }
 
-/** The individual commands in a shell line, each judged on its own. */
+/**
+ * The individual commands in a shell line, each judged on its own.
+ *
+ * Quote characters are dropped first: `sh -c 'echo ok; rm -rf /'` otherwise
+ * leaves a trailing quote on the nested command and a pattern anchored to the
+ * end stops matching something that still runs.
+ */
 function commandSegments(command) {
   return command
+    .replace(/['"\\]/g, ' ')
     .split(/\|\||&&|[;\n|&]/)
     .map((part) => part.trim())
     .filter(Boolean);

@@ -415,6 +415,11 @@ class Database:
 
     def _connect_blocking(self, user: str, password: str, dsn: str) -> None:
         self.connection = oracledb.connect(user=user, password=password, dsn=dsn)
+        if self.read_only:
+            # Enforced by Oracle rather than by reading the statement: a SELECT
+            # can call a function that writes, and no classifier sees that.
+            with self.connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION READ ONLY")
 
     async def connect(self) -> None:
         raw = os.getenv("ORACLE_CONNECTION_STRING")
@@ -1381,7 +1386,11 @@ async def explain_plan(
     title="Sorgu geçmişi",
     description="Recent queries run against this database from this workspace, with timings, "
     "statuses and errors.",
-    annotations=_READ_ONLY,
+    # Not read-only: reading the history opens the local history database, which
+    # creates its directory and runs any pending schema migration on the way in.
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    ),
 )
 def get_query_history_tool(
     ctx: Context[AppContext],

@@ -457,3 +457,31 @@ def test_a_hostile_table_name_cannot_break_out_of_a_query(mcp_server, database):
                     sql_builder.Identifier(hostile)
                 )
             )
+
+
+def test_read_only_mode_is_enforced_by_the_database(database, monkeypatch):
+    """A SELECT can call a function that writes, which no classifier can see.
+
+    Read-only mode therefore has to be the database's, not just this server's
+    reading of the statement text.
+    """
+    monkeypatch.setenv("READ_ONLY", "true")
+    for module in [m for m in sys.modules if m.startswith("mcp_server_postgres")]:
+        del sys.modules[module]
+    import mcp_server_postgres.server as module
+
+    async def run():
+        db = module.Database()
+        assert db.read_only is True
+        await db.connect()
+        try:
+            with pytest.raises(module.ToolError, match="read-only"):
+                await db.fetch("CREATE TABLE mcp_test_should_not_exist (id int)")
+        finally:
+            db.close()
+
+    anyio.run(run)
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT to_regclass('mcp_test_should_not_exist') IS NULL")
+        assert cursor.fetchone()[0] is True

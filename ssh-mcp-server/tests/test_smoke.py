@@ -171,6 +171,11 @@ def _client(server_module, confirm=True, asked=None):
         ("echo hi; rm -rf /var", True, True),
         ("rm -rf /tmp/x; true", False, True),
         ("echo ok; ls", False, False),
+        # A nested shell hides the command behind quotes; the closing quote used
+        # to stop an end-anchored rule from matching what still runs.
+        ("sh -c 'echo ok; rm --no-preserve-root -rf /'", True, True),
+        ('bash -c "rm -rf /"', True, True),
+        ("sh -c 'ls'", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

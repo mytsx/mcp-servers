@@ -585,8 +585,16 @@ _SEGMENT_SEPARATOR = re.compile(r"(?:\|\||&&|[;\n|&])")
 
 
 def command_segments(command: str) -> list[str]:
-    """The individual commands in a shell line, each classified on its own."""
-    return [part.strip() for part in _SEGMENT_SEPARATOR.split(command) if part.strip()]
+    """The individual commands in a shell line, each classified on its own.
+
+    Quote characters are dropped before splitting. `sh -c 'echo ok; rm -rf /'`
+    otherwise leaves a trailing quote on the nested command, and a rule anchored
+    to the end of a segment stops matching something that still runs. Dropping
+    them can only make a segment look more dangerous than it is, which is the
+    safe direction for a blocklist.
+    """
+    unquoted = command.replace("'", " ").replace('"', " ").replace("\\", " ")
+    return [part.strip() for part in _SEGMENT_SEPARATOR.split(unquoted) if part.strip()]
 
 
 def blocked_reason(command: str) -> str | None:

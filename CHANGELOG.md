@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: read-only mode is enforced by the database,
+  not only by reading the statement. A plain `SELECT destructive_function()` is a write that
+  no classifier can see, so the session itself is opened read-only.
+- **ssh-mcp-server** and **asger-terminal-mcp**: quotes cannot shield a nested command —
+  `sh -c 'echo ok; rm --no-preserve-root -rf /'` is still a root removal.
+- **agent-chat**: an auto-approved clear refuses state that appeared after the check, rather
+  than deleting it unasked.
+- **agent-chat**: pruning stale agents is one locked read-modify-write, so a join landing
+  mid-prune is no longer erased.
+- **agent-chat**: valid JSON of the wrong shape is reset before the mutator sees it, instead
+  of failing halfway through an operation that has already written another file.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: `get_query_history` is not advertised
+  read-only — opening the history database creates its directory and runs migrations.
 - **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: write detection is an allowlist. Anything
   not provably read-only counts as a write, so the classifier no longer has to have heard of
   every statement that can change data — `COPY ... FROM PROGRAM`, `PURGE`, `LOCK`, `SET` and

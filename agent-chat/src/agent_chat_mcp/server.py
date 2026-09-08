@@ -22,6 +22,7 @@ from mcp.server.mcpserver import Context, Elicit, Resolve
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from . import __version__
 
@@ -213,6 +214,14 @@ class ChatStore:
             try:
                 f.seek(0)
                 data = cls._decode(f.read(), default, filepath)
+                if not isinstance(data, type(default)):
+                    # Valid JSON of the wrong shape: a dict where a list belongs
+                    # would reach the mutator and fail halfway through an
+                    # operation that has already written another file.
+                    logger.warning(
+                        "%s beklenen %s değil, sıfırlanıyor", filepath, type(default).__name__
+                    )
+                    data = type(default)()
                 result = mutate(data)
                 f.seek(0)
                 f.truncate()
@@ -301,12 +310,20 @@ class ChatStore:
         }
 
     def live_agents(self, room: str) -> dict[str, dict]:
-        """Present agents, persisting the cleanup. Writes; not for read-only paths."""
-        agents = self.agents(room)
-        live = self._fresh(agents)
-        if len(live) != len(agents):
-            self.save_agents(live, room)
-        return live
+        """Present agents, persisting the cleanup. Writes; not for read-only paths.
+
+        Read and write happen under one lock: pruning read the roster, wrote the
+        whole file back, and a join landing in between was erased by that write.
+        """
+
+        def prune(agents: dict) -> dict[str, dict]:
+            live = self._fresh(agents)
+            if len(live) != len(agents):
+                for name in [name for name in agents if name not in live]:
+                    del agents[name]
+            return dict(agents)
+
+        return self._update_json(self.room_dir(room) / "agents.json", {}, prune)
 
     def peek_live_agents(self, room: str) -> dict[str, dict]:
         """Present agents, without writing the pruned roster back.
@@ -632,6 +649,10 @@ class ClearConfirmation(BaseModel):
     """The user's answer to the clear-room question."""
 
     confirm: bool = Field(description="Delete every message and agent record in this room?")
+    # Server-computed, hidden from the elicitation schema: it records that no
+    # question was asked because the room was empty, so the clear can refuse if
+    # something arrived in the meantime instead of deleting it unasked.
+    approved_because_empty: SkipJsonSchema[bool] = False
 
 
 async def confirm_clear(
@@ -649,7 +670,8 @@ async def confirm_clear(
     """
     store = ctx.request_context.lifespan_context.store
     if not store.has_content(room):
-        return ClearConfirmation(confirm=True)  # nothing to lose, nothing to ask
+        # Nothing to lose *right now*; the clear checks again under the lock.
+        return ClearConfirmation(confirm=True, approved_because_empty=True)
 
     return Elicit(
         f"'{store.room_name(room)}' odasındaki bütün mesajlar ve agent kayıtları "
@@ -682,6 +704,11 @@ def clear_room(
     # reported numbers are what was actually deleted rather than a reading
     # taken before the user answered.
     with store.room_lock(room):
+        if confirmation.approved_because_empty and store.has_content(room):
+            raise ToolError(
+                f"'{store.room_name(room)}' odası kontrol edildikten sonra doldu; "
+                "içeriği onaysız silmiyorum. Aynı çağrıyı tekrarla, bu kez sorulacak."
+            )
         message_count = store.clear_messages(room)
         agent_count = store.clear_agents(room)
 

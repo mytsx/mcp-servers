@@ -452,3 +452,52 @@ def test_a_file_of_the_wrong_json_type_is_replaced_not_mutated(mcp_server, tmp_p
     stored = json.loads((room / "agents.json").read_text())
     assert isinstance(stored, dict), stored
     assert "backend" in stored
+
+
+def test_an_auto_approved_clear_refuses_state_that_appeared(mcp_server, tmp_path):
+    """An empty room needs no question — but it must still be empty when cleared."""
+    import agent_chat_mcp.server as server_module
+
+    room = tmp_path / "default"
+    room.mkdir(parents=True, exist_ok=True)
+
+    original_has_content = server_module.ChatStore.has_content
+    calls = {"count": 0}
+
+    def has_content(self, room_name):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return False  # the resolver sees an empty room...
+        # ...and by the time the clear runs, someone has joined.
+        return True
+
+    server_module.ChatStore.has_content = has_content
+    try:
+
+        async def run():
+            async with _client(mcp_server, {"confirm": True}) as client:
+                result = await client.call_tool("clear_room", {})
+                assert result.is_error is True
+                assert "onaysız silmiyorum" in result.content[0].text
+
+        anyio.run(run)
+    finally:
+        server_module.ChatStore.has_content = original_has_content
+
+
+def test_a_file_of_the_wrong_type_is_reset_before_mutation(mcp_server, tmp_path):
+    """`messages.json` holding an object must not reach the append logic."""
+    room = tmp_path / "default"
+    room.mkdir(parents=True, exist_ok=True)
+    (room / "messages.json").write_text("{}")
+
+    async def run():
+        async with Client(mcp_server) as client:
+            result = await client.call_tool("join_room", {"agent_name": "backend"})
+            assert result.is_error is False
+
+    anyio.run(run)
+
+    messages = json.loads((room / "messages.json").read_text())
+    assert isinstance(messages, list)
+    assert len(messages) == 1
