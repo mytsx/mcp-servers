@@ -1,7 +1,7 @@
 # Oracle MCP Server
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/mapeg-oracle-mcp)](https://pypi.org/project/mapeg-oracle-mcp/)
 
@@ -19,6 +19,13 @@ A Model Context Protocol (MCP) server for Oracle databases. Query, explore, and 
 - **Auto Version Detection** — Detects Oracle version (11g–23ai) dynamically
 - **Thin Mode** — No Oracle Instant Client required
 - **Read-Only Mode** — Optional write protection via `READ_ONLY=true`
+- **Structured Output** — Every tool returns typed JSON: `execute_sql` gives `columns`, `rows`,
+  `row_count`, `dbms_output` and `duration_ms` as separate fields instead of one text blob
+- **Write Confirmation** — INSERT/UPDATE/DELETE/DROP is confirmed with the user before it runs,
+  with an extra warning for the irreversible ones
+- **Bind Variables** — Every dictionary lookup uses binds; names that must be interpolated are
+  validated as Oracle identifiers first
+- **Prompts** — `review_plsql` and `analyze_table` as ready-made investigation flows
 
 ## Quick Start
 
@@ -190,8 +197,20 @@ Execute any SQL query on the connected Oracle database. Supports SELECT, DML, DD
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `sql` | string | Yes | Oracle SQL query |
-| `limit` | integer | No | Max rows to return (default: 100) |
+| `sql` | string | Yes | Oracle SQL query or PL/SQL block |
+| `limit` | integer | No | Row limit added to a SELECT with no ROWNUM/FETCH (default: 100) |
+
+Returns `sql` (as actually run), `columns`, `rows`, `row_count`, `limit_applied`,
+`dbms_output` and `duration_ms`. Dates become ISO-8601 strings, NUMBER becomes float, and
+CLOBs are read into the result.
+
+**Writes are confirmed first.** A statement starting with INSERT, UPDATE, DELETE, DROP,
+ALTER, CREATE, TRUNCATE, MERGE, GRANT or REVOKE puts a question in front of the user before
+anything runs; DROP, TRUNCATE and DELETE are flagged as irreversible. If the user declines,
+nothing is executed. With `READ_ONLY=true` writes are refused without asking.
+
+A PL/SQL block gets DBMS_OUTPUT enabled and drained around it, so whatever it printed comes
+back in `dbms_output`.
 
 </details>
 
@@ -345,6 +364,23 @@ Retrieve recent query history scoped to this database and workspace.
 | `oracle://tables` | List all user tables |
 | `oracle://schema` | Table columns from USER_TAB_COLUMNS |
 | `oracle://stats` | Database version and instance info |
+| `oracle://table/{table_name}` | One table's columns and row count |
+| `oracle://source/{object_type}/{object_name}` | A PL/SQL object's source code |
+
+## Prompts
+
+| Name | Description |
+|------|-------------|
+| `review_plsql` | Read an object's source and review it for correctness and performance |
+| `analyze_table` | Inspect a table's shape, statistics, indexes, constraints and relationships |
+
+## Requirements
+
+Python 3.10+ and MCP SDK 2.x (`mcp>=2.2,<3`). The server speaks the 2026-07-28 protocol
+revision and still serves older MCP clients from the same process. All oracledb calls run on
+a worker thread, so a slow query no longer blocks the server.
+
+Verified against Oracle Database 23ai (Free).
 
 ## License
 
