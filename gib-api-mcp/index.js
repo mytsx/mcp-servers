@@ -38,12 +38,15 @@ const dateField = (description) =>
     .refine(isRealDate, 'Takvimde olmayan tarih. Örnek geçerli değer: "20260101"')
     .describe(description);
 
+const amountField = (description) =>
+  z
+    .string()
+    .regex(/^\d+([.,]\d{1,2})?$/, 'Tutar sayı olmalı, örnek: "1000.00"')
+    .describe(description);
+
 const inputSchema = (vadeDescription, odemeDescription) =>
   z.object({
-    odenecekMiktar: z
-      .string()
-      .regex(/^\d+([.,]\d{1,2})?$/, 'Tutar sayı olmalı, örnek: "1000.00"')
-      .describe('Borç tutarı (TL). Örnek: "1000.00"'),
+    odenecekMiktar: amountField('Borç tutarı (TL). Örnek: "1000.00"'),
     vadeTarihi: dateField(vadeDescription),
     odemeTarihi: dateField(odemeDescription),
   });
@@ -185,10 +188,12 @@ export function buildServer() {
     description:
       'Aynı borç için gecikme zammı ile gecikme faizini hesaplat ve hangisinin hangi durumda ' +
       'uygulandığını açıkla.',
+    // The same validation the tools apply: a prompt that accepts a date the
+    // tools will reject would look valid and then fail at the tool call.
     argsSchema: z.object({
-      odenecekMiktar: z.string().describe('Borç tutarı (TL).'),
-      vadeTarihi: z.string().describe('Vade tarihi (YYYYAAGG).'),
-      odemeTarihi: z.string().describe('Ödeme ya da tahakkuk tarihi (YYYYAAGG).'),
+      odenecekMiktar: amountField('Borç tutarı (TL).'),
+      vadeTarihi: dateField('Vade tarihi (YYYYAAGG).'),
+      odemeTarihi: dateField('Ödeme ya da tahakkuk tarihi (YYYYAAGG).'),
     }),
   },
   ({ odenecekMiktar, vadeTarihi, odemeTarihi }) => ({

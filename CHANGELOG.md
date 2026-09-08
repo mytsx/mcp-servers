@@ -57,6 +57,23 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: write detection is an allowlist. Anything
+  not provably read-only counts as a write, so the classifier no longer has to have heard of
+  every statement that can change data — `COPY ... FROM PROGRAM`, `PURGE`, `LOCK`, `SET` and
+  whatever comes next are all covered by default.
+- **ssh-mcp-server** and **asger-terminal-mcp**: each command in a shell line is classified
+  on its own. `rm --no-preserve-root -rf /; true` escaped a rule anchored to the end of the
+  input.
+- **agent-chat**: `touch` is an atomic read-modify-write and never creates a room, so a
+  polling call cannot write a stale roster back over a clear.
+- **agent-chat**: a room written by the 1.x server stays readable — `priority` was an
+  unconstrained string there, and an unknown value used to fail the whole history.
+- **agent-chat**: replacing a room file writes the requested type rather than mutating
+  whatever was decoded, so an `agents.json` holding `[]` cannot turn a join into a list
+  append that disappears on the next read.
+- **docusaurus-mcp**: pages that answer 404 or 503 are left out of the index instead of being
+  stored as error pages, which a non-empty check would then accept as a good crawl.
+- **gib-api-mcp**: the prompt validates its arguments the way its tools do.
 - **mapeg-postgres-mcp**: `SELECT ... INTO t` is treated as a write — it creates that table.
 - **ssh-mcp-server** and **asger-terminal-mcp**: the whole `rm` argument list is scanned, not
   only the leading options. GNU rm accepts options after the operands, so

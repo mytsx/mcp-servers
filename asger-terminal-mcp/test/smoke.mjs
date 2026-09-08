@@ -79,6 +79,8 @@ for (const command of [
   'rm --interactive=never -r /tmp/x',
   'rm /tmp/missing -rf /tmp/x',
   'chmod --reference=/etc/passwd -R /tmp/x',
+  'echo hi; rm -rf /tmp/x',
+  'true && rm -r /tmp/x',
   'reboot',
   'docker system prune -f',
 ]) {

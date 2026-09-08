@@ -169,6 +169,11 @@ def test_plsql_block_returns_dbms_output(mcp_server):
         ("BEGIN NULL; END;", True),
         ("DECLARE v NUMBER; BEGIN NULL; END;", True),
         ("CALL my_proc()", True),
+        # PURGE destroys recoverable objects, and the allowlist catches it
+        # without anyone having had to think of it.
+        ("PURGE RECYCLEBIN", True),
+        ("PURGE TABLE old_table", True),
+        ("ALTER SESSION SET x = 1", True),
     ],
 )
 def test_write_detection(mcp_server, sql, is_write):

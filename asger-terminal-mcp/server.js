@@ -81,10 +81,20 @@ function requirePage() {
   return page;
 }
 
+/** The individual commands in a shell line, each judged on its own. */
+function commandSegments(command) {
+  return command
+    .split(/\|\||&&|[;\n|&]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 /** Why this command needs confirming, or null when it is ordinary. */
 export function destructiveReason(command) {
-  for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
-    if (pattern.test(command)) return reason;
+  for (const segment of commandSegments(command)) {
+    for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
+      if (pattern.test(segment)) return reason;
+    }
   }
   return null;
 }

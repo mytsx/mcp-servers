@@ -237,6 +237,7 @@ class Doc:
     description: str = ""
     content: str = ""
     full_id: str = ""
+    fetched: bool = True
 
     def summary(self) -> DocSummary:
         return DocSummary(
@@ -479,18 +480,27 @@ def _skeleton_from_sitemap(urls: list[str]) -> list[Doc]:
 
 
 async def _fill_from_html(client: httpx2.AsyncClient, doc: Doc) -> None:
-    """Scrape a static page into an existing skeleton Doc."""
+    """Scrape a static page into an existing skeleton Doc.
+
+    A page that answers 404 or 503 is left marked as unfetched rather than
+    filled with an error page: the caller drops those, so a site that is up but
+    serving errors cannot replace a working index with a corrupted one.
+    """
     try:
-        html = (await client.get(doc.url)).text
-        title, desc, content = _extract_html(html, doc.url)
-        if title:
-            doc.title = title
-        if desc:
-            doc.description = desc
-        doc.content = content
+        response = await client.get(doc.url)
+        response.raise_for_status()
+        title, desc, content = _extract_html(response.text, doc.url)
     except Exception as exc:
         logger.warning("Sayfa yüklenemedi %s: %s", doc.url, exc)
-        doc.content = ""
+        doc.fetched = False
+        return
+
+    if title:
+        doc.title = title
+    if desc:
+        doc.description = desc
+    doc.content = content
+    doc.fetched = True
 
 
 async def _run_bounded(jobs: list[Callable[[], Awaitable[None]]], on_done: ProgressCallback) -> None:
@@ -558,6 +568,11 @@ async def build_index(
         logger.info("%d sayfa yükleniyor", len(index.docs))
         jobs = [(lambda d=doc: _fill_from_html(client, d)) for doc in index.docs]
         await _run_bounded(jobs, progress)
+
+        failed = [doc for doc in index.docs if not doc.fetched]
+        if failed:
+            logger.warning("%d sayfa alınamadı, indekse konmadı", len(failed))
+        index.docs = [doc for doc in index.docs if doc.fetched]
 
     index.reindex()
     logger.info("Hazır: %s — %d döküman", index.site_title, len(index.docs))

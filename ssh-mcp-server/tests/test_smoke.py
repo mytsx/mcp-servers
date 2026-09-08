@@ -164,6 +164,13 @@ def _client(server_module, confirm=True, asked=None):
         ("rm file -r dir", False, True),
         ("rm --interactive=never -r /var/tmp/build", False, True),
         ("rm dosya.txt", False, False),
+        # A blocked command stays blocked when something follows it: rules
+        # anchored to the end of the input were defeated by a trailing `; true`.
+        ("rm --no-preserve-root -rf /; true", True, True),
+        ("rm -rf / && echo ok", True, True),
+        ("echo hi; rm -rf /var", True, True),
+        ("rm -rf /tmp/x; true", False, True),
+        ("echo ok; ls", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

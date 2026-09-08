@@ -82,6 +82,13 @@ const leap = await client.callTool({
 assert.ok(!leap.isError, '20240229 geçerli bir tarih');
 console.log('LEAP DAY: accepted');
 
+// The prompt validates its arguments the same way the tools do.
+const badPrompt = await client
+  .getPrompt({ name: 'gecikme_karsilastir', arguments: { odenecekMiktar: '1000', vadeTarihi: '20260231', odemeTarihi: '20260301' } })
+  .then(() => null, (error) => error);
+assert.ok(badPrompt, 'takvimde olmayan tarih prompt tarafından da reddedilmeliydi');
+console.log('PROMPT VALIDATION: rejected');
+
 const { prompts } = await client.listPrompts();
 console.log('PROMPTS:', prompts.map((p) => p.name).join(', '));
 assert.equal(prompts.length, 1);

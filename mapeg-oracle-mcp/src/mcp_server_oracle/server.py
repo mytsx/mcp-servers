@@ -288,8 +288,8 @@ def statement_keyword(sql: str) -> str:
     return parts[0].upper() if parts else ""
 
 
-# Statements that open a PL/SQL block or invoke code. What runs inside is
-# opaque to this server, so they are treated as writes.
+# Statements that open a PL/SQL block or invoke code. Kept as a named set
+# because `_run_sql` also uses it to decide whether to collect DBMS_OUTPUT.
 PLSQL_KEYWORDS = frozenset(["BEGIN", "DECLARE", "CALL", "EXEC", "EXECUTE"])
 
 # A data-modifying statement inside a CTE or a block body.
@@ -342,16 +342,21 @@ def _mask_literals(sql: str) -> str:
     return "".join(masked)
 
 
-def is_write_query(sql: str) -> bool:
-    """Whether this statement can change the database.
+# Statements that cannot change anything. Everything else counts as a write.
+#
+# Deliberately an allowlist: a blocklist has to name every form that can modify
+# the database — a PL/SQL block, CALL, PURGE, a DML inside a CTE — and each one
+# it misses runs unconfirmed and through read-only mode. A false positive only
+# costs a question that was not needed.
+READ_ONLY_KEYWORDS = frozenset(["SELECT", "WITH"])
 
-    Conservative by design: the answer gates both read-only mode and the
-    confirmation prompt, so a false negative runs an unconfirmed write while a
-    false positive only asks a question that was not strictly needed.
-    `BEGIN DELETE FROM t; END;` starts with BEGIN, and a WITH can hide a DELETE.
-    """
+
+def is_write_query(sql: str) -> bool:
+    """Whether this statement can change the database."""
     keyword = statement_keyword(sql)
-    if keyword in WRITE_KEYWORDS or keyword in PLSQL_KEYWORDS:
+    if not keyword:
+        return False
+    if keyword not in READ_ONLY_KEYWORDS:
         return True
     if keyword == "WITH":
         return _EMBEDDED_WRITE.search(_mask_literals(sql)) is not None

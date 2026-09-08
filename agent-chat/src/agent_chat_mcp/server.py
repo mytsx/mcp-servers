@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar, get_args
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context, Elicit, Resolve
@@ -223,19 +223,25 @@ class ChatStore:
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
-    @classmethod
-    def _write_json(cls, filepath: Path, data: dict | list) -> None:
-        """Replace a file's contents wholesale, under an exclusive lock."""
+    @staticmethod
+    def _write_json(filepath: Path, data: dict | list) -> None:
+        """Replace a file's contents wholesale, under an exclusive lock.
 
-        def replace(current: dict | list) -> None:
-            if isinstance(current, dict):
-                current.clear()
-                current.update(data)  # type: ignore[arg-type]
-            else:
-                current.clear()
-                current.extend(data)  # type: ignore[arg-type]
-
-        cls._update_json(filepath, type(data)(), replace)
+        The new value is written as it is. Mutating whatever was decoded would
+        take its type from the old contents, so a `messages.json` holding an
+        object would turn a list write into an object one and quietly break
+        every later append.
+        """
+        with open(filepath, "a+") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                f.truncate()
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def agents(self, room: str) -> dict[str, dict]:
         raw = self._read_json(self.room_path(room) / "agents.json", {})
@@ -252,13 +258,23 @@ class ChatStore:
         self._write_json(self.room_dir(room) / "messages.json", messages)
 
     def touch(self, agent_name: str, room: str) -> None:
-        """Record that an agent is still alive, if it is in the room."""
+        """Record that an agent is still alive, if it is in the room.
+
+        Read and write happen under one lock, so a roster read before a clear
+        cannot be written back after it. Nothing is created: polling a room
+        that does not exist must not bring it into being.
+        """
         if not agent_name:
             return
-        agents = self.agents(room)
-        if agent_name in agents:
-            agents[agent_name]["last_seen"] = time.time()
-            self.save_agents(agents, room)
+        agents_file = self.room_path(room) / "agents.json"
+        if not agents_file.exists():
+            return
+
+        def refresh(agents: dict) -> None:
+            if agent_name in agents:
+                agents[agent_name]["last_seen"] = time.time()
+
+        self._update_json(agents_file, {}, refresh)
 
     def append_message(self, room: str, **fields) -> dict:
         """Append one message, deriving its id under the same lock as the write."""
@@ -340,17 +356,27 @@ class ChatStore:
 
 
 def _to_message(raw: dict) -> Message:
-    """Adapt a stored record to the wire model (stored keys are `from`/`to`)."""
+    """Adapt a stored record to the wire model (stored keys are `from`/`to`).
+
+    Values are normalized rather than trusted: the v1 server exposed `priority`
+    as an unconstrained string, so an existing room can hold anything at all.
+    Rejecting those would fail the whole history, not just the odd record.
+    """
     return Message(
         id=raw["id"],
         from_agent=raw["from"],
         to_agent=raw["to"],
         content=raw["content"],
         timestamp=raw["timestamp"],
-        type=raw.get("type", "direct"),
-        expects_reply=raw.get("expects_reply", False),
-        priority=raw.get("priority", "normal"),
+        type=_known(raw.get("type"), get_args(MessageKind), "direct"),
+        expects_reply=bool(raw.get("expects_reply", False)),
+        priority=_known(raw.get("priority"), get_args(Priority), "normal"),
     )
+
+
+def _known(value: object, allowed: tuple, fallback: str) -> str:
+    """`value` if the wire model accepts it, otherwise `fallback`."""
+    return value if value in allowed else fallback
 
 
 # ---------------------------------------------------------------------------

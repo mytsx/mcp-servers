@@ -579,12 +579,28 @@ class SSHConnection:
 # ---------------------------------------------------------------------------
 
 
+# Where one shell command ends and the next begins. Splitting on these is what
+# keeps `rm -rf /; true` from escaping a rule anchored to the end of the input.
+_SEGMENT_SEPARATOR = re.compile(r"(?:\|\||&&|[;\n|&])")
+
+
+def command_segments(command: str) -> list[str]:
+    """The individual commands in a shell line, each classified on its own."""
+    return [part.strip() for part in _SEGMENT_SEPARATOR.split(command) if part.strip()]
+
+
 def blocked_reason(command: str) -> str | None:
-    """The pattern this command matches, if it is one we never run."""
-    lowered = command.lower()
-    for pattern in BLOCKED_PATTERNS:
-        if re.search(pattern, lowered):
-            return pattern
+    """The pattern this command matches, if it is one we never run.
+
+    Each segment is judged separately: an end-anchored rule would otherwise be
+    defeated by appending anything at all, and `rm -rf /; true` is still
+    `rm -rf /`.
+    """
+    for segment in command_segments(command):
+        lowered = segment.lower()
+        for pattern in BLOCKED_PATTERNS:
+            if re.search(pattern, lowered):
+                return pattern
     return None
 
 
@@ -592,11 +608,13 @@ def confirm_reason(command: str) -> str | None:
     """A plain-language reason to ask the user first, or None to just run it.
 
     Matched against the command as written: the patterns carry their own flags,
-    because `chmod -R` is not the same option as `chmod -r`.
+    because `chmod -R` is not the same option as `chmod -r`. Each segment of a
+    shell line is judged on its own.
     """
-    for pattern, reason in CONFIRM_PATTERNS:
-        if pattern.search(command):
-            return reason
+    for segment in command_segments(command):
+        for pattern, reason in CONFIRM_PATTERNS:
+            if pattern.search(segment):
+                return reason
     return None
 
 

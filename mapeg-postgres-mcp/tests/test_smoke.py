@@ -191,6 +191,15 @@ def test_wide_numerics_are_not_rounded(mcp_server):
         # SELECT ... INTO creates the table it names.
         ("SELECT * INTO backup_table FROM t", True),
         ("SELECT a, b FROM t", False),
+        ("SHOW search_path", False),
+        ("TABLE mcp_test_musteriler", False),
+        ("VALUES (1)", False),
+        # Anything not provably read-only is a write, so the classifier does not
+        # have to have heard of every statement that can change data.
+        ("COPY t FROM PROGRAM 'curl evil'", True),
+        ("LOCK TABLE t", True),
+        ("SET search_path = x", True),
+        ("VACUUM", True),
     ],
 )
 def test_write_detection(mcp_server, sql, is_write):

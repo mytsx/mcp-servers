@@ -170,3 +170,41 @@ def test_a_failed_refresh_keeps_the_working_index(mcp_server, monkeypatch):
             assert after["doc_count"] == 3
 
     anyio.run(run)
+
+
+def test_pages_that_fail_are_left_out_of_the_index(mcp_server):
+    """A site that is up but serving errors must not replace a good index.
+
+    The sitemap still lists every page, and `get()` does not raise on a 404, so
+    without dropping the failures the refresh would install an index full of
+    error pages and report success.
+    """
+    import docusaurus_mcp.server as module
+
+    original_get = module.httpx2.AsyncClient.get
+
+    async def not_found(self, url, *args, **kwargs):
+        if "/docs/" in str(url):
+            request = module.httpx2.Request("GET", str(url))
+            return module.httpx2.Response(404, request=request, text="not found")
+        return await original_get(self, url, *args, **kwargs)
+
+    async def run():
+        async with Client(mcp_server) as client:
+            # The lifespan crawled the real site, so there is a good index to
+            # protect. Only now does the site start failing.
+            before = (await client.call_tool("get_doc_structure", {})).structured_content
+            assert before["doc_count"] == 3
+
+            module.httpx2.AsyncClient.get = not_found
+            try:
+                result = await client.call_tool("refresh_index", {})
+                assert result.is_error is True
+                assert "korundu" in result.content[0].text
+            finally:
+                module.httpx2.AsyncClient.get = original_get
+
+            after = (await client.call_tool("get_doc_structure", {})).structured_content
+            assert after["doc_count"] == 3, after
+
+    anyio.run(run)

@@ -264,19 +264,32 @@ _EXPLAIN_ANALYZE = re.compile(
 )
 
 
+# Statements that cannot change anything. Everything else counts as a write.
+#
+# This is deliberately an allowlist. A blocklist has to name every form that can
+# modify the database — COPY ... FROM, CALL, DO, PURGE, SELECT ... INTO, a DML
+# inside a CTE — and each one it misses runs unconfirmed and through read-only
+# mode. Getting the allowlist wrong only costs a question that was not needed.
+READ_ONLY_KEYWORDS = frozenset(["SELECT", "WITH", "EXPLAIN", "SHOW", "TABLE", "VALUES"])
+
+
 def _statement_is_write(sql: str) -> bool:
     keyword = statement_keyword(sql)
-    if keyword in WRITE_KEYWORDS or keyword in OPAQUE_KEYWORDS:
+    if not keyword:
+        return False  # nothing to run
+    if keyword not in READ_ONLY_KEYWORDS:
         return True
+
+    masked = _mask_literals(sql)
     if keyword == "SELECT":
         # `SELECT ... INTO new_table FROM ...` creates that table.
-        return _SELECT_INTO.search(_mask_literals(sql)) is not None
+        return _SELECT_INTO.search(masked) is not None
     if keyword == "WITH":
-        return _CTE_WRITE.search(_mask_literals(sql)) is not None
+        return _CTE_WRITE.search(masked) is not None
     if keyword == "EXPLAIN":
-        match = _EXPLAIN_ANALYZE.match(_mask_literals(sql))
+        match = _EXPLAIN_ANALYZE.match(masked)
         if match:
-            # Classify the statement being explained, not the EXPLAIN itself.
+            # ANALYZE executes what it explains, so that decides.
             return _statement_is_write(sql[match.end() :])
     return False
 

@@ -389,3 +389,66 @@ def test_mutating_tools_are_not_marked_idempotent(mcp_server):
                 assert tools[name].annotations.idempotent_hint is True, name
 
     anyio.run(run)
+
+
+def test_a_room_written_by_the_old_server_stays_readable(mcp_server, tmp_path):
+    """v1 exposed `priority` as a free string, so old rooms can hold anything.
+
+    Rejecting those records would fail the whole history, not just the record.
+    """
+    room = tmp_path / "default"
+    room.mkdir(parents=True, exist_ok=True)
+    (room / "messages.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "from": "backend",
+                    "to": "all",
+                    "content": "eski kayıt",
+                    "timestamp": "2026-01-01T00:00:00",
+                    "type": "broadcast",
+                    "priority": "high",  # never a valid value in v2
+                },
+                {
+                    "id": 2,
+                    "from": "backend",
+                    "to": "all",
+                    "content": "tipi de bilinmiyor",
+                    "timestamp": "2026-01-01T00:00:01",
+                    "type": "megaphone",
+                },
+            ]
+        )
+    )
+    (room / "agents.json").write_text("{}")
+
+    async def run():
+        async with Client(mcp_server) as client:
+            result = await client.call_tool("read_all_messages", {})
+            messages = result.structured_content["messages"]
+            assert [m["content"] for m in messages] == ["eski kayıt", "tipi de bilinmiyor"]
+            # Unknown values are normalized rather than rejected.
+            assert messages[0]["priority"] == "normal"
+            assert messages[1]["type"] == "direct"
+
+    anyio.run(run)
+
+
+def test_a_file_of_the_wrong_json_type_is_replaced_not_mutated(mcp_server, tmp_path):
+    """`agents.json` holding `[]` must not turn a join into a list append."""
+    room = tmp_path / "default"
+    room.mkdir(parents=True, exist_ok=True)
+    (room / "agents.json").write_text("[]")
+
+    async def run():
+        async with Client(mcp_server) as client:
+            await client.call_tool("join_room", {"agent_name": "backend"})
+            listed = await client.call_tool("list_agents", {})
+            assert [a["name"] for a in listed.structured_content["agents"]] == ["backend"]
+
+    anyio.run(run)
+
+    stored = json.loads((room / "agents.json").read_text())
+    assert isinstance(stored, dict), stored
+    assert "backend" in stored
