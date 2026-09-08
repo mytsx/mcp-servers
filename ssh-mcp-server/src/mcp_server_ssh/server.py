@@ -268,6 +268,7 @@ class SSHConnection:
         self.activity_logger = get_activity_logger()
         self.last_connection_check: float | None = None
         self.connection_failures = 0
+        self._active_channel = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -371,9 +372,54 @@ class SSHConnection:
     def _exec_blocking(self, command: str, timeout: int) -> tuple[str, str, int]:
         assert self.client is not None
         _, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        out = stdout.read().decode("utf-8", errors="ignore")
-        err = stderr.read().decode("utf-8", errors="ignore")
-        return out, err, stdout.channel.recv_exit_status()
+        # Kept so a cancelled call can close it and stop the remote command.
+        self._active_channel = stdout.channel
+        try:
+            out = stdout.read().decode("utf-8", errors="ignore")
+            err = stderr.read().decode("utf-8", errors="ignore")
+            return out, err, stdout.channel.recv_exit_status()
+        finally:
+            self._active_channel = None
+
+    async def _exec_cancellable(self, command: str, timeout: int) -> tuple[str, str, int]:
+        """Run a command so that cancelling the call also stops it remotely.
+
+        `anyio.to_thread.run_sync` does not return until the thread finishes, so
+        catching the cancellation around it would only run once the command had
+        already completed. A watchdog cancelled at the same moment closes the
+        channel instead, which makes the reads fail and the thread return.
+        """
+        state = {"finished": False}
+
+        async def watchdog() -> None:
+            try:
+                await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                channel = self._active_channel
+                if not state["finished"] and channel is not None:
+                    with anyio.CancelScope(shield=True):
+                        await anyio.to_thread.run_sync(channel.close)
+                raise
+
+        result: tuple[str, str, int] | None = None
+        failure: Exception | None = None
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(watchdog)
+            try:
+                result = await anyio.to_thread.run_sync(self._exec_blocking, command, timeout)
+            except Exception as exc:
+                # Held rather than raised: a task group would wrap it in an
+                # ExceptionGroup and the retry loop matches on paramiko's types.
+                failure = exc
+            finally:
+                state["finished"] = True
+                task_group.cancel_scope.cancel()
+
+        if failure is not None:
+            raise failure
+        assert result is not None
+        return result
 
     async def run(self, command: str, timeout: int = DEFAULT_COMMAND_TIMEOUT) -> CommandResult:
         """Run a command, reconnecting and retrying if the link dropped mid-flight."""
@@ -383,9 +429,12 @@ class SSHConnection:
         last_error: Exception | None = None
         for attempt in range(MAX_RETRY_ATTEMPTS + 1):
             try:
-                out, err, exit_code = await anyio.to_thread.run_sync(
-                    self._exec_blocking, command, timeout
-                )
+                if self.client is None:
+                    # A previous attempt's reconnect failed; try again here so
+                    # the remaining attempts are not spent on a missing client.
+                    await self.connect()
+                    reconnected = True
+                out, err, exit_code = await self._exec_cancellable(command, timeout)
                 return CommandResult(
                     command=command,
                     exit_code=exit_code,
@@ -394,6 +443,8 @@ class SSHConnection:
                     duration_ms=(time.time() - started) * 1000,
                     reconnected=reconnected,
                 )
+            except ToolError:
+                raise
             except (paramiko.SSHException, ConnectionError, OSError) as exc:
                 last_error = exc
                 logger.warning(
@@ -410,7 +461,11 @@ class SSHConnection:
                     reconnected = True
                     await anyio.sleep(RETRY_DELAY_SECONDS)
                 except ToolError as reconnect_error:
+                    # Remembered so the final message names the reconnect
+                    # failure rather than a stale command error.
+                    last_error = reconnect_error
                     logger.error("Yeniden bağlanma başarısız: %s", reconnect_error)
+                    await anyio.sleep(RETRY_DELAY_SECONDS)
 
         raise ToolError(
             f"Komut {MAX_RETRY_ATTEMPTS + 1} denemede çalıştırılamadı: {last_error}"

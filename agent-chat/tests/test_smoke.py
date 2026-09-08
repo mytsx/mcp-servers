@@ -261,3 +261,60 @@ def test_reading_a_missing_room_does_not_create_it(mcp_server, tmp_path):
             assert [r["name"] for r in rooms.structured_content["rooms"]] == []
 
     anyio.run(run)
+
+
+def _join_from_worker(chat_dir: str, agent: str, ready) -> None:
+    """Join a room from another process, once told to."""
+    import importlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    os.environ["AGENT_CHAT_DIR"] = chat_dir
+    os.environ["AGENT_CHAT_ROOM"] = "default"
+    for module in [m for m in _sys.modules if m.startswith("agent_chat_mcp")]:
+        del _sys.modules[module]
+    module = importlib.import_module("agent_chat_mcp.server")
+
+    store = module.ChatStore(Path(chat_dir), "default")
+    ready.wait(timeout=30)
+    with store.room_lock("default"):
+        agents = store.agents("default")
+        agents[agent] = {"role": "", "joined_at": "now", "last_seen": 0}
+        store.save_agents(agents, "default")
+        store.append_message(
+            "default",
+            **{"from": "SYSTEM", "to": "all", "content": f"{agent} katıldı", "type": "system"},
+        )
+
+
+def test_clearing_a_room_is_all_or_nothing(mcp_server, tmp_path):
+    """A join must not interleave between clearing the messages and the roster.
+
+    The two files have their own locks, so without a room-wide one an agent
+    could land its roster entry after the messages were cleared and its join
+    notice after the roster was — leaving a room that is neither cleared nor
+    intact.
+    """
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    joiner = context.Process(target=_join_from_worker, args=(str(tmp_path), "latecomer", ready))
+    joiner.start()
+
+    async def run():
+        async with _client(mcp_server, {"confirm": True}) as client:
+            await client.call_tool("join_room", {"agent_name": "backend"})
+            ready.set()  # let the other process race the clear
+            await client.call_tool("clear_room", {})
+
+    anyio.run(run)
+    joiner.join(timeout=60)
+    assert joiner.exitcode == 0
+
+    messages = json.loads((tmp_path / "default" / "messages.json").read_text())
+    agents = json.loads((tmp_path / "default" / "agents.json").read_text())
+
+    # Either the join landed entirely before the clear (both empty), or entirely
+    # after it (one agent and its own notice). Never one without the other.
+    assert (len(messages), len(agents)) in {(0, 0), (1, 1)}, (messages, agents)

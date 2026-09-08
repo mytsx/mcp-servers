@@ -296,11 +296,47 @@ _EMBEDDED_WRITE = re.compile(
 )
 
 
-def _strip_literals(sql: str) -> str:
-    """Blank out string literals and comments, so their contents cannot match."""
-    without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    without_line = re.sub(r"--[^\n]*", " ", without_block)
-    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+def _mask_literals(sql: str) -> str:
+    """Blank out string literals and comments, keeping every offset intact.
+
+    The result is index-for-index aligned with the input, because the caller
+    slices the *original* text at offsets found here. A shorter replacement
+    would shift every later offset and split the statement in the wrong place.
+    """
+    masked = list(sql)
+    index = 0
+    length = len(sql)
+    while index < length:
+        character = sql[index]
+        if character == "'":
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        masked[index] = masked[index + 1] = " "
+                        index += 2
+                        continue
+                    masked[index] = " "
+                    index += 1
+                    break
+                masked[index] = " "
+                index += 1
+            continue
+        if sql.startswith("--", index):
+            while index < length and sql[index] != "\n":
+                masked[index] = " "
+                index += 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            end = length if end == -1 else end + 2
+            for position in range(index, end):
+                if sql[position] != "\n":
+                    masked[position] = " "
+            index = end
+            continue
+        index += 1
+    return "".join(masked)
 
 
 def is_write_query(sql: str) -> bool:
@@ -315,7 +351,7 @@ def is_write_query(sql: str) -> bool:
     if keyword in WRITE_KEYWORDS or keyword in PLSQL_KEYWORDS:
         return True
     if keyword == "WITH":
-        return _EMBEDDED_WRITE.search(_strip_literals(sql)) is not None
+        return _EMBEDDED_WRITE.search(_mask_literals(sql)) is not None
     return False
 
 

@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp**: `CALL` and `DO` are treated as writes — they run code this server
+  cannot see into, the way a PL/SQL block does on the Oracle side.
+- **mapeg-postgres-mcp**: literal and comment masking preserves offsets. It was used to find
+  statement boundaries in the original text, so a shorter replacement shifted every later
+  offset and split `SELECT 'x'; DELETE FROM t` in the wrong place.
+- **ssh-mcp-server**: cancelling a call closes the command's channel, so the remote command
+  stops instead of running on to its timeout.
+- **ssh-mcp-server**: a failed reconnect no longer burns the remaining retries on a missing
+  client, and the error reported names the reconnect failure.
+- **agent-chat**: clearing a room holds a room-wide lock, so a join cannot interleave between
+  the two files and leave a room that is neither cleared nor intact.
+- **asger-terminal-mcp**: `take_screenshot` is no longer advertised read-only — it writes a
+  PNG and keeps it.
 - **mapeg-postgres-mcp**: every statement in the input is classified, not just the first.
   psycopg2 runs `SELECT 1; DELETE FROM t` as one call, and the leading `SELECT` used to
   clear it past both read-only mode and the confirmation.

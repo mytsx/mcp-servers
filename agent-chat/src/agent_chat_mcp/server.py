@@ -10,9 +10,9 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal, TypeVar
@@ -140,6 +140,24 @@ class ChatStore:
         room_dir = self.chat_dir / self.room_name(room)
         room_dir.mkdir(parents=True, exist_ok=True)
         return room_dir
+
+    @contextmanager
+    def room_lock(self, room: str) -> Iterator[None]:
+        """Hold a room-wide lock across an operation that touches both files.
+
+        The per-file locks in `_update_json` keep one file consistent, but they
+        leave a gap between two writes: an agent joining between clearing the
+        messages and clearing the roster would have its entry deleted while its
+        join notice survived. Anything that writes both files takes this first,
+        always in this order, so the two locks cannot deadlock.
+        """
+        lock_file = self.room_dir(room) / ".lock"
+        with open(lock_file, "a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def room_path(self, room: str) -> Path:
         """Where the room would be, without bringing it into existence.
@@ -387,24 +405,23 @@ def join_room(
 ) -> JoinResult:
     """Join the chat room with a unique name."""
     store = ctx.request_context.lifespan_context.store
-    agents = store.live_agents(room)
-
-    agents[agent_name] = {
-        "role": role,
-        "joined_at": datetime.now().isoformat(),
-        "last_seen": time.time(),
-    }
-    store.save_agents(agents, room)
-
-    store.append_message(
+    with store.room_lock(room):
+        agents = store.live_agents(room)
+        agents[agent_name] = {
+            "role": role,
+            "joined_at": datetime.now().isoformat(),
+            "last_seen": time.time(),
+        }
+        store.save_agents(agents, room)
+        store.append_message(
         room,
-        **{
-            "from": "SYSTEM",
-            "to": "all",
-            "content": f"🟢 {agent_name} odaya katıldı" + (f" (Rol: {role})" if role else ""),
-            "type": "system",
-        },
-    )
+            **{
+                "from": "SYSTEM",
+                "to": "all",
+                "content": f"🟢 {agent_name} odaya katıldı" + (f" (Rol: {role})" if role else ""),
+                "type": "system",
+            },
+        )
 
     return JoinResult(
         agent_name=agent_name,
@@ -547,22 +564,22 @@ def leave_room(
 ) -> LeaveResult:
     """Leave the chat room."""
     store = ctx.request_context.lifespan_context.store
-    agents = store.agents(room)
+    with store.room_lock(room):
+        agents = store.agents(room)
+        if agent_name not in agents:
+            raise ToolError(f"'{agent_name}' zaten '{store.room_name(room)}' odasında değil.")
 
-    if agent_name not in agents:
-        raise ToolError(f"'{agent_name}' zaten '{store.room_name(room)}' odasında değil.")
-
-    del agents[agent_name]
-    store.save_agents(agents, room)
-    store.append_message(
-        room,
-        **{
-            "from": "SYSTEM",
-            "to": "all",
-            "content": f"🔴 {agent_name} odadan ayrıldı",
-            "type": "system",
-        },
-    )
+        del agents[agent_name]
+        store.save_agents(agents, room)
+        store.append_message(
+            room,
+            **{
+                "from": "SYSTEM",
+                "to": "all",
+                "content": f"🔴 {agent_name} odadan ayrıldı",
+                "type": "system",
+            },
+        )
 
     return LeaveResult(agent_name=agent_name, room=store.room_name(room))
 
@@ -620,8 +637,9 @@ def clear_room(
     # Counted as they are removed, under the same lock as the write, so the
     # reported numbers are what was actually deleted rather than a reading
     # taken before the user answered.
-    message_count = store.clear_messages(room)
-    agent_count = store.clear_agents(room)
+    with store.room_lock(room):
+        message_count = store.clear_messages(room)
+        agent_count = store.clear_agents(room)
 
     logger.info("'%s' odası temizlendi", store.room_name(room))
     return ClearResult(

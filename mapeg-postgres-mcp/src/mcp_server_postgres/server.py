@@ -45,6 +45,11 @@ WRITE_KEYWORDS = frozenset(
 # Writes that cannot be undone once they run.
 IRREVERSIBLE_KEYWORDS = frozenset(["DROP", "TRUNCATE", "DELETE"])
 
+# Statements that run code this server cannot see into: `CALL destructive()` and
+# `DO $$ BEGIN DELETE ... END $$`. Treated as writes for the same reason PL/SQL
+# blocks are on the Oracle side.
+OPAQUE_KEYWORDS = frozenset(["CALL", "DO"])
+
 
 # ---------------------------------------------------------------------------
 # Wire models
@@ -186,11 +191,47 @@ _CTE_WRITE = re.compile(
 )
 
 
-def _strip_literals(sql: str) -> str:
-    """Blank out string literals and comments, so their contents cannot match."""
-    without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
-    without_line = re.sub(r"--[^\n]*", " ", without_block)
-    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+def _mask_literals(sql: str) -> str:
+    """Blank out string literals and comments, keeping every offset intact.
+
+    The result is index-for-index aligned with the input, because the caller
+    slices the *original* text at offsets found here. A shorter replacement
+    would shift every later offset and split the statement in the wrong place.
+    """
+    masked = list(sql)
+    index = 0
+    length = len(sql)
+    while index < length:
+        character = sql[index]
+        if character == "'":
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        masked[index] = masked[index + 1] = " "
+                        index += 2
+                        continue
+                    masked[index] = " "
+                    index += 1
+                    break
+                masked[index] = " "
+                index += 1
+            continue
+        if sql.startswith("--", index):
+            while index < length and sql[index] != "\n":
+                masked[index] = " "
+                index += 1
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            end = length if end == -1 else end + 2
+            for position in range(index, end):
+                if sql[position] != "\n":
+                    masked[position] = " "
+            index = end
+            continue
+        index += 1
+    return "".join(masked)
 
 
 def split_statements(sql: str) -> list[str]:
@@ -199,7 +240,7 @@ def split_statements(sql: str) -> list[str]:
     psycopg2 happily executes `SELECT 1; DELETE FROM t` as one call, so every
     statement in the input has to be classified, not just the leading one.
     """
-    masked = _strip_literals(sql)
+    masked = _mask_literals(sql)
     parts: list[str] = []
     start = 0
     for index, character in enumerate(masked):
@@ -212,10 +253,10 @@ def split_statements(sql: str) -> list[str]:
 
 def _statement_is_write(sql: str) -> bool:
     keyword = statement_keyword(sql)
-    if keyword in WRITE_KEYWORDS:
+    if keyword in WRITE_KEYWORDS or keyword in OPAQUE_KEYWORDS:
         return True
     if keyword == "WITH":
-        return _CTE_WRITE.search(_strip_literals(sql)) is not None
+        return _CTE_WRITE.search(_mask_literals(sql)) is not None
     return False
 
 

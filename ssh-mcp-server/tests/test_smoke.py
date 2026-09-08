@@ -148,6 +148,14 @@ def _client(server_module, confirm=True, asked=None):
         # ...but reading the manual is not destructive.
         ("rm --help", False, False),
         ("rm file.txt", False, False),
+        # Recursive permission changes: the pattern used to be matched against a
+        # lowercased command, so an uppercase -R could never fire.
+        ("chmod -R 755 /var/www", False, True),
+        ("chown -R user:group /srv", False, True),
+        ("chmod --recursive 755 /srv", False, True),
+        ("chmod -v -R 755 /srv", False, True),
+        ("chmod 755 file", False, False),
+        ("chmod a-r file", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

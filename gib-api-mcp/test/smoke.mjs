@@ -25,9 +25,10 @@ const stub = createServer((req, res) => {
     );
   });
 });
-await new Promise((resolve) => stub.listen(8936, '127.0.0.1', resolve));
+// Port 0: an ephemeral port, so parallel runs cannot collide on EADDRINUSE.
+await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve));
 
-process.env.GIB_API_URL = 'http://127.0.0.1:8936';
+process.env.GIB_API_URL = `http://127.0.0.1:${stub.address().port}`;
 
 const { Client } = await import('@modelcontextprotocol/client');
 const { InMemoryTransport } = await import('@modelcontextprotocol/client');

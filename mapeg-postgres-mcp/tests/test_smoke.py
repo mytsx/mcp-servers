@@ -169,12 +169,57 @@ def test_wide_numerics_are_not_rounded(mcp_server):
         # A data-modifying CTE: the leading keyword is WITH, but this deletes.
         ("WITH removed AS (DELETE FROM t RETURNING *) SELECT * FROM removed", True),
         ("WITH n AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM n", True),
+        # Multiple statements: psycopg2 runs them all, so all are classified.
+        ("SELECT 1; SELECT 2", False),
+        ("SELECT 1 LIMIT 1; DELETE FROM t", True),
+        ("DELETE FROM t; SELECT 1", True),
+        # A literal before the separator used to shift the split offsets.
+        ("SELECT 'x'; DELETE FROM t", True),
+        ("SELECT 'it''s'; DELETE FROM t", True),
+        ("SELECT ';' ; SELECT 2", False),
+        ("/* ; */ SELECT 1", False),
+        # Code this server cannot see into.
+        ("CALL destructive_proc()", True),
+        ("DO $$ BEGIN DELETE FROM t; END $$", True),
     ],
 )
 def test_write_detection(mcp_server, sql, is_write):
     import mcp_server_postgres.server as module
 
     assert module.is_write_query(sql) is is_write
+
+
+def test_masking_preserves_offsets(mcp_server):
+    """The mask is sliced against the original text, so it must not resize it."""
+    import mcp_server_postgres.server as module
+
+    for sql in [
+        "SELECT 'x'; DELETE FROM t",
+        "SELECT 'it''s a test'; SELECT 2",
+        "-- comment ; here\nSELECT 1",
+        "/* block ; comment */ SELECT 1",
+    ]:
+        assert len(module._mask_literals(sql)) == len(sql)
+
+
+def test_a_write_after_a_literal_is_confirmed(mcp_server, database):
+    """`SELECT 'x'; DELETE ...` must not slip through on a shifted offset."""
+    asked: list[str] = []
+
+    async def run():
+        async with _client(mcp_server, confirm=False, asked=asked) as client:
+            result = await client.call_tool(
+                "execute_sql",
+                {"sql": "SELECT 'x'; DELETE FROM mcp_test_musteriler WHERE id = 3"},
+            )
+            assert result.is_error is True
+            assert asked, "the DELETE after the literal must be confirmed"
+
+    anyio.run(run)
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM mcp_test_musteriler")
+        assert cursor.fetchone()[0] == 3
 
 
 def test_a_write_hidden_in_a_cte_is_confirmed(mcp_server, database):

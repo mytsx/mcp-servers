@@ -41,7 +41,13 @@ const DESTRUCTIVE_PATTERNS = [
   [/\b(shutdown|reboot|halt|poweroff)\b|\binit\s+[06]\b/i, 'sunucuyu kapatıyor/yeniden başlatıyor'],
   [/\bmkfs\b|\bdd\s+.*of=\/dev\//i, 'diski biçimlendiriyor'],
   [/\b(kill\s+-9|killall|pkill)\b/i, 'süreçleri zorla sonlandırıyor'],
-  [/\b(chown|chmod)\s+-[a-z]*R/i, 'izinleri özyinelemeli değiştiriyor'],
+  [
+    // Scan the whole option prefix, and match both spellings of recursive. The
+    // command name is case-insensitive; the short flag is not, because
+    // `chmod -R` and `chmod -r` are different things.
+    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:-{1,2}[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
+    'izinleri özyinelemeli değiştiriyor',
+  ],
   [/\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b/i, 'paket kaldırıyor'],
   [/\bdocker\s+(rm|rmi|prune|system\s+prune)\b/i, 'Docker kaynaklarını siliyor'],
   [/\b(drop\s+(database|table)|truncate\s+table)\b/i, 'veritabanı nesnesi siliyor'],
@@ -394,7 +400,9 @@ export function buildServer() {
       widthHint: z.number().describe('Görüntünün piksel genişliği.'),
       heightHint: z.number().describe('Görüntünün piksel yüksekliği.'),
     }),
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    // Writes a PNG to SCREENSHOT_DIR and keeps it, so it is not read-only:
+    // a client that calls read-only tools freely would accumulate captures.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
   async () => {
     const target = requirePage();
