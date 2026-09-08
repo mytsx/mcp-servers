@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 
@@ -15,11 +15,6 @@ if (!BASE_URL) {
   );
   process.exit(1);
 }
-
-export const server = new McpServer({
-  name: 'gib-api-mcp',
-  version: '2.0.0',
-});
 
 const dateField = (description) =>
   z
@@ -104,7 +99,7 @@ function summarize(result) {
 }
 
 /** Register one calculation tool; the two differ only in endpoint and wording. */
-function registerCalculation({ name, title, description, endpoint, label, vade, odeme }) {
+function registerCalculation(server, { name, title, description, endpoint, label, vade, odeme }) {
   server.registerTool(
     name,
     {
@@ -130,31 +125,41 @@ function registerCalculation({ name, title, description, endpoint, label, vade, 
   );
 }
 
-registerCalculation({
-  name: 'calculate_gecikme_zammi',
-  title: 'Gecikme zammı hesapla',
-  description:
-    'GIB Gecikme Zammı hesapla (6183 sayılı AATUHK m.51). Kesinleşmiş vergi borcu vadesinde ' +
-    'ödenmezse, vade tarihinden fiili ödeme tarihine kadar aylık+günlük karma sistemle hesaplanır.',
-  endpoint: '/api/gecikme-zammi',
-  label: 'Gecikme Zammı',
-  vade: 'Vade tarihi (YYYYAAGG). Örnek: "20260101"',
-  odeme: 'Fiili ödeme tarihi (YYYYAAGG). Örnek: "20260301"',
-});
+/**
+ * Build a fresh server. `serveStdio` calls this once per connection, so that a
+ * connection's protocol era is pinned to its own instance.
+ */
+export function buildServer() {
+  const server = new McpServer({
+    name: 'gib-api-mcp',
+    version: '2.0.0',
+  });
 
-registerCalculation({
-  name: 'calculate_gecikme_faizi',
-  title: 'Gecikme faizi hesapla',
-  description:
-    'GIB Gecikme Faizi hesapla (213 sayılı VUK m.112). İkmalen/resen/idarece yapılan ' +
-    'tarhiyatlarda, normal vade tarihinden tahakkuk tarihine kadar sadece tam ay esasına göre hesaplanır.',
-  endpoint: '/api/gecikme-faizi',
-  label: 'Gecikme Faizi',
-  vade: 'Normal vade tarihi (YYYYAAGG). Örnek: "20260101"',
-  odeme: 'Tahakkuk/tarhiyat tarihi (YYYYAAGG). Örnek: "20260601"',
-});
+  registerCalculation(server, {
+    name: 'calculate_gecikme_zammi',
+    title: 'Gecikme zammı hesapla',
+    description:
+      'GIB Gecikme Zammı hesapla (6183 sayılı AATUHK m.51). Kesinleşmiş vergi borcu vadesinde ' +
+      'ödenmezse, vade tarihinden fiili ödeme tarihine kadar aylık+günlük karma sistemle hesaplanır.',
+    endpoint: '/api/gecikme-zammi',
+    label: 'Gecikme Zammı',
+    vade: 'Vade tarihi (YYYYAAGG). Örnek: "20260101"',
+    odeme: 'Fiili ödeme tarihi (YYYYAAGG). Örnek: "20260301"',
+  });
 
-server.registerPrompt(
+  registerCalculation(server, {
+    name: 'calculate_gecikme_faizi',
+    title: 'Gecikme faizi hesapla',
+    description:
+      'GIB Gecikme Faizi hesapla (213 sayılı VUK m.112). İkmalen/resen/idarece yapılan ' +
+      'tarhiyatlarda, normal vade tarihinden tahakkuk tarihine kadar sadece tam ay esasına göre hesaplanır.',
+    endpoint: '/api/gecikme-faizi',
+    label: 'Gecikme Faizi',
+    vade: 'Normal vade tarihi (YYYYAAGG). Örnek: "20260101"',
+    odeme: 'Tahakkuk/tarhiyat tarihi (YYYYAAGG). Örnek: "20260601"',
+  });
+
+  server.registerPrompt(
   'gecikme_karsilastir',
   {
     title: 'Gecikme zammı ve faizini karşılaştır',
@@ -183,20 +188,21 @@ server.registerPrompt(
             '4. Hesabı kendin yapma; araçların döndürdüğü rakamları kullan.',
         },
       },
-    ],
-  })
-);
+      ],
+    })
+  );
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  return server;
 }
 
 // Only serve over stdio when run as the program; importing the module (tests)
-// gets the configured server without a transport attached.
+// gets buildServer without a transport attached. serveStdio serves both the
+// 2026-07-28 revision and the 2025-era protocol, picking per connection.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
+  try {
+    serveStdio(buildServer);
+  } catch (error) {
     console.error('Sunucu başlatılamadı:', error);
     process.exit(1);
-  });
+  }
 }

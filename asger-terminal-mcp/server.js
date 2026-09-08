@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { chromium } from 'playwright';
 import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
@@ -13,7 +13,10 @@ import { z } from 'zod';
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SESSION_FILE = path.join(__dirname, 'session-state.json');
+
+// Where the browser session state is kept. Overridable so a second terminal
+// — or a test — does not overwrite or delete the default one.
+const SESSION_FILE = process.env.SESSION_FILE || path.join(__dirname, 'session-state.json');
 
 // Configuration from environment
 const DEFAULT_TERMINAL_URL = process.env.TERMINAL_URL || '';
@@ -40,12 +43,8 @@ const DESTRUCTIVE_PATTERNS = [
   [/>\s*\/(?!tmp)/, 'sistem dosyasının üzerine yazıyor'],
 ];
 
-export const server = new McpServer({
-  name: 'asger-terminal-mcp',
-  version: '2.0.0',
-});
-
-// Browser state, shared across tool calls for the life of the process.
+// Browser state, shared across tool calls for the life of the process. The
+// browser outlives any one connection, so it is not per-server state.
 let browser = null;
 let context = null;
 let page = null;
@@ -206,7 +205,17 @@ const OCR_CAVEAT =
 // Tools
 // ---------------------------------------------------------------------------
 
-server.registerTool(
+/**
+ * Build a fresh server. `serveStdio` calls this once per connection, so that a
+ * connection's protocol era is pinned to its own instance.
+ */
+export function buildServer() {
+  const server = new McpServer({
+    name: 'asger-terminal-mcp',
+    version: '2.0.0',
+  });
+
+  server.registerTool(
   'open_terminal',
   {
     title: 'Terminali aç',
@@ -269,7 +278,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'save_session',
   {
     title: 'Oturumu kaydet',
@@ -290,7 +299,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'execute_command',
   {
     title: 'Komut çalıştır',
@@ -324,7 +333,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'execute_and_read',
   {
     title: 'Komut çalıştır ve oku',
@@ -368,7 +377,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'take_screenshot',
   {
     title: 'Ekran görüntüsü al',
@@ -401,7 +410,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'extract_text',
   {
     title: 'Ekrandaki metni oku',
@@ -430,7 +439,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'disconnect',
   {
     title: 'Bağlantıyı kapat',
@@ -448,7 +457,7 @@ server.registerTool(
   }
 );
 
-server.registerTool(
+  server.registerTool(
   'clear_session',
   {
     title: 'Kayıtlı oturumu sil',
@@ -476,7 +485,7 @@ server.registerTool(
   }
 );
 
-server.registerPrompt(
+  server.registerPrompt(
   'terminal_arastir',
   {
     title: 'Terminalde araştır',
@@ -502,9 +511,12 @@ server.registerPrompt(
             '5. Sonunda cevabı, dayandığın komut çıktılarıyla birlikte yaz.',
         },
       },
-    ],
-  })
-);
+      ],
+    })
+  );
+
+  return server;
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -519,23 +531,21 @@ async function closeBrowser() {
   page = null;
 }
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('asger-terminal-mcp started');
+// Only serve over stdio when run as the program; importing the module (tests)
+// gets buildServer without a transport attached. serveStdio serves both the
+// 2026-07-28 revision and the 2025-era protocol, picking per connection.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    serveStdio(buildServer);
+    console.error('asger-terminal-mcp started');
+  } catch (error) {
+    console.error('Sunucu başlatılamadı:', error);
+    process.exit(1);
+  }
 
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
       closeBrowser().finally(() => process.exit(0));
     });
   }
-}
-
-// Only serve over stdio when run as the program; importing the module (tests)
-// gets the configured server without a transport attached.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    console.error('Sunucu başlatılamadı:', error);
-    process.exit(1);
-  });
 }

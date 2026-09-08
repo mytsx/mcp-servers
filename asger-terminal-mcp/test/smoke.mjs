@@ -3,11 +3,19 @@
 // error they must return when nothing is open.
 import assert from 'node:assert/strict';
 
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
 process.env.TERMINAL_URL = 'https://terminal.example.invalid/';
+// Never touch the real saved session: clear_session below deletes this file.
+const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'asger-smoke-'));
+process.env.SESSION_FILE = path.join(sessionDir, 'session-state.json');
 
 const { InMemoryTransport } = await import('@modelcontextprotocol/server');
 const { Client } = await import('@modelcontextprotocol/client');
-const { server } = await import('../server.js');
+const { buildServer } = await import('../server.js');
+const server = buildServer();
 
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 const client = new Client({ name: 'smoke', version: '1.0.0' });
@@ -50,10 +58,16 @@ assert.equal(idle.structuredContent.wasOpen, false);
 
 const cleared = await client.callTool({ name: 'clear_session', arguments: {} });
 console.log('CLEAR SESSION existed:', cleared.structuredContent.existed);
+assert.equal(cleared.structuredContent.existed, false, 'the temp session file should not exist');
+assert.ok(
+  cleared.structuredContent.sessionFile.startsWith(sessionDir),
+  'the server must honour SESSION_FILE, not delete the checked-out session'
+);
 
 const { prompts } = await client.listPrompts();
 console.log('PROMPTS:', prompts.map((p) => p.name).join(', '));
 assert.equal(prompts.length, 1);
 
 await client.close();
+await fs.rm(sessionDir, { recursive: true, force: true });
 console.log('smoke: OK');

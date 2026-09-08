@@ -31,9 +31,9 @@ process.env.GIB_API_URL = 'http://127.0.0.1:8936';
 
 const { Client } = await import('@modelcontextprotocol/client');
 const { InMemoryTransport } = await import('@modelcontextprotocol/client');
-const serverModule = await import('../index.js');
+const { buildServer } = await import('../index.js');
 
-const { server } = serverModule;
+const server = buildServer();
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 const client = new Client({ name: 'smoke', version: '1.0.0' });
 await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
