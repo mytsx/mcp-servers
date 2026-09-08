@@ -81,12 +81,40 @@ Sıralama küçükten büyüğe; ilk sunucu diğerlerinde tekrar edilecek konvan
 - `logging.getLogger(__name__)` modül seviyesinde; `print()` yok
 - Her sunucuda `scripts/smoke_test.py` benzeri in-memory `Client` kontrolü
 
-### 2. agent-chat (403 satır, FastMCP, 9 tool)
-- [ ] A + B ortak maddeleri
-- [ ] 9 tool'un dönüş tipleri Pydantic modellerine (`Message`, `Room`, `AgentStatus`)
-- [ ] Resource: `chat://rooms`, `chat://rooms/{room}/messages` (oda listesi ve geçmiş)
-- [ ] Prompt: oda özeti / son mesajları toparlama şablonu
-- [ ] Okuma tool'larına `read_only_hint=True`; oda silme varsa `destructive_hint=True` + elicitation
+**Yolda çıkan v2 kısıtları (hepsinde geçerli):**
+- **Resource handler'ları lifespan context'ine erişemez.** `Context` parametresi alsalar bile
+  `ctx.request_context` "Context is not available outside of a request" ile patlıyor; URI
+  şablonlu olması da değiştirmiyor. Statik URI'li resource `Context` parametresini kabul bile
+  etmiyor (kayıt anında `ValueError`). Çözüm: lifespan'ın doldurduğu modül seviyesinde bir
+  tutucu (`_app` / `_store`), resource oradan okur.
+- Tool handler'ları sync (`def`) olsa bile `ctx.request_context` çalışıyor — kısıt sadece
+  resource'larda.
+
+### 2. agent-chat (403 satır, FastMCP, 9 tool) ✅
+- [x] A + B ortak maddeleri
+- [x] 9 tool'un dönüşü Pydantic modeli (`Message`, `AgentInfo`, `RoomInfo`, `MessageBatch`, ...)
+- [x] Dosya erişimi `ChatStore` sınıfına toplandı, lifespan'da tutuluyor
+- [x] Resource: `chat://rooms`, `chat://rooms/{room}/messages`
+- [x] Prompt: `summarize_room`
+- [x] `clear_room` → `Resolve`/`Elicit` ile onay; oda zaten boşsa soru sorulmuyor
+- [x] `leave_room` odada olmayan agent için `ToolError`
+- [x] Annotation'lar; `last_seen` yazan tool'lar dürüstçe `read_only_hint=False`
+
+**Bilinen sorun (bu migrasyonun kapsamı dışı, ayrı iş):** `_write_json` dosyayı `open(..., "w")`
+ile açıp *sonra* `flock` alıyor — truncate kilitten önce oluyor. Aynı odaya eşzamanlı iki yazıcı
+mesaj kaybedebilir. Mesaj ID'si de `len(messages)+1` ile üretiliyor, yani yarış durumunda ID
+çakışabilir. Düzeltme: geçici dosyaya yazıp `os.replace` ile atomik taşıma + ayrı kilit dosyası.
+
+### 3. docusaurus-mcp (560 satır, FastMCP, 4 tool) ✅
+- [x] A + B ortak maddeleri
+- [x] Arama sonuçları için structured output (`SearchResults` / `SearchHit`)
+- [x] `refresh_index` tool'u eklendi: `ctx.report_progress()` ile sayfa sayfa ilerleme
+- [x] Cancellation: anyio task group; çağrı iptal edilince uçuştaki fetch'ler de iptal oluyor
+- [x] Resource: `docs://{doc_ref}` (ID, path veya URL ile)
+- [x] Prompt: `explain_topic`
+- [x] `ThreadPoolExecutor` + sync `httpx` → `httpx2.AsyncClient` + `anyio` (10 eşzamanlı)
+- [x] Tarama import anından lifespan'a taşındı; başarısız tarama artık `sys.exit` etmiyor
+- [x] Tüm okuma tool'ları `read_only_hint=True`
 
 ### 3. docusaurus-mcp (560 satır, FastMCP, 4 tool)
 - [ ] A + B ortak maddeleri
