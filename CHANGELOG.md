@@ -178,6 +178,19 @@ All seven Python servers were started as real stdio subprocesses and negotiated
 against Oracle Database 23ai. Both JS servers ship a smoke test (`npm test`) and were
 verified over stdio.
 
+### Release
+
+`scripts/build-release.sh` builds every distributable and `scripts/verify-release.py`
+installs each one into a throwaway environment and starts it over stdio. All nine
+packages install clean and negotiate 2026-07-28; `RELEASING.md` has the upload steps.
+
+That check earned its keep immediately: both Node servers were packaged with an entry
+point that did nothing when installed. npm links the bin into `node_modules/.bin`, so
+`process.argv[1]` is that symlink while `import.meta.url` is the real file — comparing
+them unresolved meant `npx -y gib-api-mcp` started a process that exited silently. The
+paths are resolved now, and both suites drive the server through a symlink to keep it
+that way.
+
 ### Known follow-ups
 
 - The published PyPI/npm packages are still at 1.0.0; a `uvx`/`npx` install keeps getting

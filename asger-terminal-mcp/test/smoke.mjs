@@ -11,6 +11,11 @@ process.env.TERMINAL_URL = 'https://terminal.example.invalid/';
 // Never touch the real saved session: clear_session below deletes this file.
 const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'asger-smoke-'));
 process.env.SESSION_FILE = path.join(sessionDir, 'session-state.json');
+const ENTRY_POINT = '../server.js';
+const ENTRY_ENV = {
+  TERMINAL_URL: process.env.TERMINAL_URL,
+  SESSION_FILE: process.env.SESSION_FILE,
+};
 
 const { InMemoryTransport } = await import('@modelcontextprotocol/server');
 const { z } = await import('zod');
@@ -137,4 +142,38 @@ assert.equal(prompts.length, 1);
 
 await client.close();
 await fs.rm(sessionDir, { recursive: true, force: true });
+
+// The installed entry point must actually start the server. npm links the bin
+// into node_modules/.bin, so process.argv[1] is that symlink while
+// import.meta.url is the real file: comparing them unresolved made an installed
+// server exit silently while running the file directly worked fine.
+{
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync, rmSync, symlinkSync, realpathSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const nodePath = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const entry = realpathSync(fileURLToPath(new URL(ENTRY_POINT, import.meta.url)));
+  const linkDir = mkdtempSync(nodePath.join(tmpdir(), 'binlink-'));
+  const link = nodePath.join(linkDir, 'server-link.mjs');
+  symlinkSync(entry, link);
+
+  try {
+    const request =
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} }) + '\n';
+    const stdout = execFileSync(process.execPath, [link], {
+      input: request,
+      env: { ...process.env, ...ENTRY_ENV },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    assert.ok(stdout.trim().length > 0, 'symlink üzerinden çalıştırılan sunucu yanıt vermeli');
+    assert.ok(stdout.includes('"jsonrpc"'), stdout.slice(0, 200));
+    console.log('BIN SYMLINK: server responds');
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+  }
+}
+
 console.log('smoke: OK');

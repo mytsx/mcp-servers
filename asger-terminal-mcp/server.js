@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import Tesseract from 'tesseract.js';
 import { z } from 'zod';
@@ -570,10 +571,28 @@ async function closeBrowser() {
   page = null;
 }
 
+/**
+ * Whether this module is the program being run.
+ *
+ * npm installs the bin as a symlink in node_modules/.bin, so `process.argv[1]`
+ * is that link while `import.meta.url` is the real file. Comparing them
+ * unresolved meant an installed server started nothing at all and exited
+ * silently — it only worked when the file was run by its own path.
+ */
+function isProgram() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
 // Only serve over stdio when run as the program; importing the module (tests)
 // gets buildServer without a transport attached. serveStdio serves both the
 // 2026-07-28 revision and the 2025-era protocol, picking per connection.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isProgram()) {
   try {
     serveStdio(buildServer);
     console.error('asger-terminal-mcp started');

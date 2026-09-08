@@ -29,6 +29,8 @@ const stub = createServer((req, res) => {
 await new Promise((resolve) => stub.listen(0, '127.0.0.1', resolve));
 
 process.env.GIB_API_URL = `http://127.0.0.1:${stub.address().port}`;
+const ENTRY_POINT = '../index.js';
+const ENTRY_ENV = { GIB_API_URL: process.env.GIB_API_URL };
 
 const { Client } = await import('@modelcontextprotocol/client');
 const { InMemoryTransport } = await import('@modelcontextprotocol/client');
@@ -95,4 +97,38 @@ assert.equal(prompts.length, 1);
 
 await client.close();
 stub.close();
+
+// The installed entry point must actually start the server. npm links the bin
+// into node_modules/.bin, so process.argv[1] is that symlink while
+// import.meta.url is the real file: comparing them unresolved made an installed
+// server exit silently while running the file directly worked fine.
+{
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync, rmSync, symlinkSync, realpathSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const nodePath = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+
+  const entry = realpathSync(fileURLToPath(new URL(ENTRY_POINT, import.meta.url)));
+  const linkDir = mkdtempSync(nodePath.join(tmpdir(), 'binlink-'));
+  const link = nodePath.join(linkDir, 'server-link.mjs');
+  symlinkSync(entry, link);
+
+  try {
+    const request =
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} }) + '\n';
+    const stdout = execFileSync(process.execPath, [link], {
+      input: request,
+      env: { ...process.env, ...ENTRY_ENV },
+      encoding: 'utf8',
+      timeout: 30000,
+    });
+    assert.ok(stdout.trim().length > 0, 'symlink üzerinden çalıştırılan sunucu yanıt vermeli');
+    assert.ok(stdout.includes('"jsonrpc"'), stdout.slice(0, 200));
+    console.log('BIN SYMLINK: server responds');
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+  }
+}
+
 console.log('smoke: OK');

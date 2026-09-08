@@ -35,6 +35,13 @@ The PostgreSQL and Oracle suites need a live database and skip themselves when o
 configured — `docker-compose.yml` brings up both, and the script's header has the environment
 variables to export.
 
+## Releasing
+
+See [RELEASING.md](./RELEASING.md). `scripts/build-release.sh` produces every
+distributable and `scripts/verify-release.py` installs each one into a throwaway
+environment and starts it — the check that catches packaging bugs the test
+suites cannot see.
+
 ## Servers
 
 ### Database
