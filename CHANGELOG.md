@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp**: `SELECT ... INTO t` is treated as a write — it creates that table.
+- **ssh-mcp-server** and **asger-terminal-mcp**: the whole `rm` argument list is scanned, not
+  only the leading options. GNU rm accepts options after the operands, so
+  `rm /tmp/missing -rf /var` deleted recursively without being confirmed or blocked.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: the connection is established under the
+  same lock that owns the query, so two first requests cannot each build one and leave the
+  loser leaked while a watchdog cancels the wrong connection.
+- **mapeg-oracle-mcp**: a PL/SQL block's DBMS_OUTPUT is enabled, run and drained under one
+  lock. The buffer belongs to the session, so overlapping blocks could read each other's
+  output.
+- **mapeg-oracle-mcp**: a BLOB reports its size without being read into memory first.
+- **agent-chat**: `send_message` writes presence and the message under the room lock, so a
+  clear cannot land between them; and the mutating tools no longer claim to be idempotent.
 - **mapeg-postgres-mcp**: `EXPLAIN ANALYZE <write>` is treated as a write. PostgreSQL runs
   the statement it wraps, so `EXPLAIN ANALYZE DELETE FROM t` used to delete rows through
   `execute_sql` unconfirmed and under read-only mode.

@@ -318,3 +318,74 @@ def test_clearing_a_room_is_all_or_nothing(mcp_server, tmp_path):
     # Either the join landed entirely before the clear (both empty), or entirely
     # after it (one agent and its own notice). Never one without the other.
     assert (len(messages), len(agents)) in {(0, 0), (1, 1)}, (messages, agents)
+
+
+def _send_from_worker(chat_dir: str, ready) -> None:
+    """Send a message from another process, once told to."""
+    import importlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    os.environ["AGENT_CHAT_DIR"] = chat_dir
+    os.environ["AGENT_CHAT_ROOM"] = "default"
+    for module in [m for m in _sys.modules if m.startswith("agent_chat_mcp")]:
+        del _sys.modules[module]
+    module = importlib.import_module("agent_chat_mcp.server")
+
+    store = module.ChatStore(Path(chat_dir), "default")
+    ready.wait(timeout=30)
+    with store.room_lock("default"):
+        store.touch("backend", "default")
+        store.append_message(
+            "default",
+            **{"from": "backend", "to": "all", "content": "yarış", "type": "broadcast"},
+        )
+
+
+def test_a_send_cannot_straddle_a_clear(mcp_server, tmp_path):
+    """A message and its sender's presence land together, or not at all.
+
+    Without the room lock a clear finishing between the touch and the append
+    left a message sitting in a room reported as emptied.
+    """
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    sender = context.Process(target=_send_from_worker, args=(str(tmp_path), ready))
+    sender.start()
+
+    async def run():
+        async with _client(mcp_server, {"confirm": True}) as client:
+            await client.call_tool("join_room", {"agent_name": "backend"})
+            ready.set()
+            await client.call_tool("clear_room", {})
+
+    anyio.run(run)
+    sender.join(timeout=60)
+    assert sender.exitcode == 0
+
+    messages = json.loads((tmp_path / "default" / "messages.json").read_text())
+    agents = json.loads((tmp_path / "default" / "agents.json").read_text())
+
+    # Either the send happened before the clear (both empty afterwards), or
+    # after it (the message is there). A message with no trace of its sender
+    # having been present is the state the lock rules out.
+    assert len(messages) in {0, 1}, messages
+    if messages:
+        assert messages[0]["content"] == "yarış"
+    assert len(agents) == 0 or "backend" in agents
+
+
+def test_mutating_tools_are_not_marked_idempotent(mcp_server):
+    """Retrying a send appends twice, so it must not claim to be idempotent."""
+
+    async def run():
+        async with Client(mcp_server) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+            for name in ["send_message", "join_room", "leave_room"]:
+                assert tools[name].annotations.idempotent_hint is False, name
+            for name in ["read_messages", "list_agents", "get_last_message_id"]:
+                assert tools[name].annotations.idempotent_hint is True, name
+
+    anyio.run(run)

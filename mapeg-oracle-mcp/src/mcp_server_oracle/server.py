@@ -256,8 +256,11 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, oracledb.LOB):
-        # A CLOB reads as str, a BLOB as bytes — the latter still has to be
-        # normalized or it would put raw binary into a JSON result.
+        # A CLOB is read because its text is the point. A BLOB is not: only its
+        # size is reported, so reading a gigabyte to then throw it away would
+        # cost memory for nothing.
+        if value.type in (oracledb.DB_TYPE_BLOB, oracledb.DB_TYPE_RAW):
+            return f"<{value.size()} bytes>"
         return _jsonable(value.read())
     if isinstance(value, (bytes, memoryview)):
         return f"<{len(bytes(value))} bytes>"
@@ -422,8 +425,10 @@ class Database:
 
         self.db_identifier = dsn
         logger.info("Oracle bağlantısı kuruldu: %s", dsn)
+        # connect() is called with the query lock held, so these use the
+        # already-owned helpers; the lock is not reentrant.
         await self._detect_version()
-        await self.enable_dbms_output()
+        await self._enable_dbms_output_owned()
 
     def close(self) -> None:
         if self.connection:
@@ -439,11 +444,15 @@ class Database:
             await self.connect()
 
     async def _detect_version(self) -> None:
-        """Name the Oracle release, preferring version_full (18c and later)."""
+        """Name the Oracle release, preferring version_full (18c and later).
+
+        Called from connect(), which already owns the connection.
+        """
         for column in ("version_full", "version"):
             try:
-                value = await self.scalar(f"SELECT {column} FROM v$instance")
-            except ToolError:
+                rows, _, _ = await self._run_owned(f"SELECT {column} FROM v$instance", None)
+                value = next(iter(rows[0].values())) if rows else None
+            except (ToolError, oracledb.Error):
                 continue
             if value:
                 major = str(value).split(".")[0]
@@ -484,8 +493,11 @@ class Database:
         # One connection, so one query at a time: without this a request could
         # be waiting for the connection while another's query runs, and its
         # cancellation would cancel that unrelated query. Waiting here is
-        # cancellable and touches nothing.
+        # cancellable and touches nothing. Connecting happens inside the lock
+        # too, or two first requests would each build a connection and one
+        # would replace — and leak — the other's.
         async with self._query_lock:
+            await self.ensure()
             return await self._run_owned(sql, params)
 
     async def _run_owned(
@@ -528,11 +540,29 @@ class Database:
     async def fetch(
         self, sql: str, params: dict | None = None
     ) -> tuple[list[dict], list[str], int]:
-        await self.ensure()
         try:
             return await self._run_cancellable(sql, params)
         except oracledb.Error as exc:
             raise ToolError(f"Oracle SQL hatası: {str(exc).strip()}") from exc
+
+    async def run_block(
+        self, sql: str, expects_output: bool
+    ) -> tuple[list[dict], list[str], int, str]:
+        """Run a PL/SQL block and collect its DBMS_OUTPUT under one lock.
+
+        The buffer belongs to the session, not to the call, so two overlapping
+        blocks would otherwise read each other's lines — or drain the buffer
+        while the other was still filling it.
+        """
+        async with self._query_lock:
+            await self.ensure()
+            await self._refresh_dbms_output_owned(force=expects_output)
+            try:
+                rows, columns, affected = await self._run_owned(sql, None)
+            except oracledb.Error as exc:
+                raise ToolError(f"Oracle SQL hatası: {str(exc).strip()}") from exc
+            output = await self._drain_dbms_output_owned()
+        return rows, columns, affected, output
 
     async def scalar(self, sql: str, params: dict | None = None) -> Any:
         rows, _, _ = await self.fetch(sql, params)
@@ -551,6 +581,12 @@ class Database:
     async def enable_dbms_output(self, buffer_size: int | None = DBMS_OUTPUT_BUFFER_BYTES) -> None:
         """Turn DBMS_OUTPUT on for this session. None means an unlimited buffer."""
         await self.ensure()
+        await self._enable_dbms_output_owned(buffer_size)
+
+    async def _enable_dbms_output_owned(
+        self, buffer_size: int | None = DBMS_OUTPUT_BUFFER_BYTES
+    ) -> None:
+        """As above, for a caller that already owns the connection."""
         try:
             await anyio.to_thread.run_sync(self._enable_dbms_output_blocking, buffer_size)
         except oracledb.Error as exc:
@@ -581,6 +617,11 @@ class Database:
 
     async def drain_dbms_output(self, max_lines: int = DBMS_OUTPUT_MAX_LINES) -> str:
         """Read and clear whatever the session has buffered."""
+        async with self._query_lock:
+            return await self._drain_dbms_output_owned(max_lines)
+
+    async def _drain_dbms_output_owned(self, max_lines: int = DBMS_OUTPUT_MAX_LINES) -> str:
+        """As above, for a caller that already owns the connection."""
         if self.connection is None:
             return ""
         try:
@@ -589,7 +630,7 @@ class Database:
             (error_obj,) = exc.args
             if getattr(error_obj, "code", None) == 20000:  # ORU-10027: buffer overflow
                 logger.warning("DBMS_OUTPUT buffer taştı, sınırsıza alınıyor")
-                await self.enable_dbms_output(None)
+                await self._enable_dbms_output_owned(None)
                 return "⚠️ DBMS_OUTPUT buffer taştı; buffer temizlendi ve sınırsıza alındı."
             logger.warning("DBMS_OUTPUT okunamadı: %s", exc)
             return ""
@@ -598,12 +639,12 @@ class Database:
             lines.append(f"... (çıktı {max_lines} satırda kesildi)")
         return "\n".join(lines)
 
-    async def refresh_dbms_output(self, force: bool = False) -> None:
+    async def _refresh_dbms_output_owned(self, force: bool = False) -> None:
         """Re-enable DBMS_OUTPUT if the session lost it, at most once a minute."""
         if not force and time.time() - self.last_dbms_output_check < DBMS_OUTPUT_CHECK_INTERVAL:
             return
-        await self.drain_dbms_output()
-        await self.enable_dbms_output()
+        await self._drain_dbms_output_owned()
+        await self._enable_dbms_output_owned()
 
     # -- logging -----------------------------------------------------------
 
@@ -802,13 +843,18 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
         effective_sql = f"{effective_sql} FETCH FIRST {limit} ROWS ONLY"
         limit_applied = limit
 
-    if is_plsql:
-        # A block that prints needs the buffer on and empty before it runs.
-        await db.refresh_dbms_output(force="DBMS_OUTPUT" in upper)
-
     started = time.time()
     try:
-        rows, columns, affected = await db.fetch(effective_sql)
+        if is_plsql:
+            # Enabling, running and draining happen under one lock: the
+            # DBMS_OUTPUT buffer belongs to the session, so an overlapping call
+            # would otherwise read this one's lines.
+            rows, columns, affected, dbms_output = await db.run_block(
+                effective_sql, expects_output="DBMS_OUTPUT" in upper
+            )
+        else:
+            rows, columns, affected = await db.fetch(effective_sql)
+            dbms_output = ""
     except ToolError as exc:
         db.log_query(
             "execute_sql",
@@ -820,7 +866,6 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
         )
         raise
 
-    dbms_output = await db.drain_dbms_output() if is_plsql else ""
     duration = (time.time() - started) * 1000
 
     result = QueryResult(

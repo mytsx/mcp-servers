@@ -33,8 +33,12 @@ const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), 'asg
 // An `rm` whose options include a recursive or force flag, wherever it appears:
 // `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`. Matching only the
 // first option let `rm -v -r /path` and `rm --recursive --force /path` through.
+// GNU rm accepts options before *and* after the file operands, so the whole
+// argument list is scanned — `rm /tmp/missing -rf /var` deletes recursively.
+// The scan stops at a command separator so a later command is not mistaken for
+// this one's operands.
 const RM_DESTRUCTIVE =
-  /\brm\s+(?:(?:-[a-z]+|--[a-z-]+(?:=[^\s]*)?)\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
+  /\brm\s+(?:[^\s;|&]+\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
 
 const DESTRUCTIVE_PATTERNS = [
   [RM_DESTRUCTIVE, 'dosya/dizin siliyor'],

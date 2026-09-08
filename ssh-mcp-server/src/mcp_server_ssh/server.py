@@ -68,17 +68,19 @@ RETRY_DELAY_SECONDS = 1
 
 # Commands that are never run, at any confirmation. These destroy the host
 # rather than something on it.
-# The options that can precede a destructive flag, in any spelling: short
-# bundles, GNU long forms, and long forms carrying a value such as
-# `--interactive=never`. Without the value form, `rm --interactive=never -r`
-# was auto-approved because the scan stopped at the first unrecognised option.
-_RM_FLAGS = r"(?:(?:-[a-zA-Z]+|--[a-z-]+(?:=[^\s]*)?)\s+)*"
+# A destructive flag anywhere in an `rm` invocation. GNU rm accepts options
+# before *and after* the file operands — `rm /tmp/missing -rf /var` deletes
+# recursively — so scanning only the leading option prefix left a bypass. The
+# arguments are scanned up to the end of the command, stopping at a separator
+# so a later command cannot be mistaken for this one's operands.
+_RM_ARGS = r"(?:[^\s;|&]+\s+)*"
+_RM_DESTRUCTIVE_FLAG = r"(?:-[a-zA-Z]*[rRfF]|--(?:recursive|force|dir)\b)"
 
 BLOCKED_PATTERNS = [
     # `rm -rf /` and `rm -rf /*`, but not `rm -rf /var/tmp/build` — that one is
     # legitimate and goes through the confirmation path instead.
-    rf"\brm\s+{_RM_FLAGS}/\s*\*?\s*(--no-preserve-root\s*)?$",
-    rf"\brm\s+{_RM_FLAGS}/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr|var)(/\*)?(\s|$)",
+    rf"\brm\s+{_RM_ARGS}/\s*\*?\s*(--no-preserve-root\s*)?$",
+    rf"\brm\s+{_RM_ARGS}/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr|var)(/\*)?(\s|$)",
     r"\bformat\b",
     r"\bmkfs\b",
     r"\bdd\s+.*of=/dev/",
@@ -91,9 +93,9 @@ BLOCKED_PATTERNS = [
 # Commands that are legitimate but destructive: the user is asked first.
 CONFIRM_PATTERNS = [
     (
-        # A recursive/force flag anywhere in the options, not just the first one:
-        # `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`.
-        re.compile(rf"\brm\s+{_RM_FLAGS}(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)", re.I),
+        # `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`,
+        # `rm --interactive=never -r`, and `rm file -r dir`.
+        re.compile(rf"\brm\s+{_RM_ARGS}{_RM_DESTRUCTIVE_FLAG}", re.I),
         "dosya/dizin siliyor",
     ),
     (

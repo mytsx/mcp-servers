@@ -255,6 +255,10 @@ def split_statements(sql: str) -> list[str]:
 # `EXPLAIN ANALYZE <statement>` executes the statement it wraps, so what it
 # wraps is what decides whether this is a write. Matched against the options
 # before the wrapped statement begins, so a table called "analyze" is not one.
+# `SELECT ... INTO t ...` is CREATE TABLE in disguise. `INSERT INTO` and
+# `CREATE TABLE ... AS SELECT` lead with their own keywords and are caught above.
+_SELECT_INTO = re.compile(r"\bINTO\s+", re.IGNORECASE)
+
 _EXPLAIN_ANALYZE = re.compile(
     r"^\s*EXPLAIN\s*(?:\(\s*[^)]*\bANALYZE\b[^)]*\)|\s+ANALYZE\b)", re.IGNORECASE
 )
@@ -264,6 +268,9 @@ def _statement_is_write(sql: str) -> bool:
     keyword = statement_keyword(sql)
     if keyword in WRITE_KEYWORDS or keyword in OPAQUE_KEYWORDS:
         return True
+    if keyword == "SELECT":
+        # `SELECT ... INTO new_table FROM ...` creates that table.
+        return _SELECT_INTO.search(_mask_literals(sql)) is not None
     if keyword == "WITH":
         return _CTE_WRITE.search(_mask_literals(sql)) is not None
     if keyword == "EXPLAIN":
@@ -360,8 +367,11 @@ class Database:
         # One connection, so one query at a time: without this a request could
         # be waiting for the connection while another's query runs, and its
         # cancellation would cancel that unrelated query. Waiting here is
-        # cancellable and touches nothing.
+        # cancellable and touches nothing. Connecting happens inside the lock
+        # too, or two first requests would each build a connection and one
+        # would replace — and leak — the other's.
         async with self._query_lock:
+            await self.ensure()
             return await self._run_owned(sql, params)
 
     async def _run_owned(
@@ -405,7 +415,6 @@ class Database:
         self, sql: str | sql_builder.Composable, params: tuple | None = None
     ) -> tuple[list[dict], list[str], int]:
         """Run a statement and return (rows, columns, rowcount)."""
-        await self.ensure()
         try:
             return await self._run_cancellable(sql, params)
         except psycopg2.Error as exc:

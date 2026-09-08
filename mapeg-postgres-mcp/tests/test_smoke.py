@@ -17,7 +17,6 @@ from pathlib import Path
 
 import anyio
 import pytest
-from urllib.parse import quote
 from mcp import Client
 from mcp.types import ElicitResult
 
@@ -189,6 +188,9 @@ def test_wide_numerics_are_not_rounded(mcp_server):
         ("EXPLAIN (ANALYZE true) DELETE FROM t", True),
         ("EXPLAIN (COSTS off) SELECT 1", False),
         ("SELECT * FROM analyze_log", False),
+        # SELECT ... INTO creates the table it names.
+        ("SELECT * INTO backup_table FROM t", True),
+        ("SELECT a, b FROM t", False),
     ],
 )
 def test_write_detection(mcp_server, sql, is_write):

@@ -159,6 +159,11 @@ def _client(server_module, confirm=True, asked=None):
         ("chmod -v -R 755 /srv", False, True),
         ("chmod 755 file", False, False),
         ("chmod a-r file", False, False),
+        # GNU rm takes options after the operands too.
+        ("rm /tmp/missing -rf /var", True, True),
+        ("rm file -r dir", False, True),
+        ("rm --interactive=never -r /var/tmp/build", False, True),
+        ("rm dosya.txt", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

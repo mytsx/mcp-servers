@@ -382,17 +382,27 @@ RoomArg = Annotated[
 
 # Presence-tracking tools update the caller's `last_seen`, so they are not
 # read-only in the strict sense the annotation means — hence read_only_hint=False
-# on tools that only look like readers.
+# on tools that only look like readers. Calling one twice is the same as calling
+# it once, so they are idempotent.
 _PRESENCE_TOOL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
     idempotent_hint=True,
     open_world_hint=False,
 )
+
+# Tools where a retry is not free: a second send appends a second message, a
+# second join emits a second notice, and a second leave is an error.
+_MUTATING_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
 _READ_ONLY_TOOL = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
 
-@mcp.tool(title="Odaya katıl", annotations=_PRESENCE_TOOL)
+@mcp.tool(title="Odaya katıl", annotations=_MUTATING_TOOL)
 def join_room(
     agent_name: Annotated[
         str, Field(description="Unique name for this agent, e.g. 'backend', 'frontend'.")
@@ -430,7 +440,7 @@ def join_room(
     )
 
 
-@mcp.tool(title="Mesaj gönder", annotations=_PRESENCE_TOOL)
+@mcp.tool(title="Mesaj gönder", annotations=_MUTATING_TOOL)
 def send_message(
     from_agent: Annotated[str, Field(description="Your agent name.")],
     content: Annotated[str, Field(description="Message content.")],
@@ -450,20 +460,24 @@ def send_message(
 ) -> SendResult:
     """Send a message to other agents."""
     store = ctx.request_context.lifespan_context.store
-    store.touch(from_agent, room)
-
     kind: MessageKind = "broadcast" if to_agent == "all" else "direct"
-    message = store.append_message(
-        room,
-        **{
-            "from": from_agent,
-            "to": to_agent,
-            "content": content,
-            "type": kind,
-            "expects_reply": expects_reply,
-            "priority": priority,
-        },
-    )
+
+    # Presence and the message land together: a clear_room finishing between
+    # them would leave a message in a room reported as emptied, or a touch
+    # would repopulate the roster after it was cleared.
+    with store.room_lock(room):
+        store.touch(from_agent, room)
+        message = store.append_message(
+            room,
+            **{
+                "from": from_agent,
+                "to": to_agent,
+                "content": content,
+                "type": kind,
+                "expects_reply": expects_reply,
+                "priority": priority,
+            },
+        )
 
     return SendResult(
         message_id=message["id"], room=store.room_name(room), to_agent=to_agent, type=kind
@@ -489,6 +503,10 @@ def read_messages(
 ) -> MessageBatch:
     """Read the messages addressed to you, newest last."""
     store = ctx.request_context.lifespan_context.store
+    # No room lock here: taking one would create the room directory, and this
+    # tool must not bring a mistyped room into existence. A lone touch is
+    # already safe — it rewrites one file, and only for an agent still in the
+    # roster, so it cannot repopulate a room that was cleared.
     store.touch(agent_name, room)
 
     matching = [
@@ -556,7 +574,7 @@ def list_agents(
     )
 
 
-@mcp.tool(title="Odadan ayrıl", annotations=_PRESENCE_TOOL)
+@mcp.tool(title="Odadan ayrıl", annotations=_MUTATING_TOOL)
 def leave_room(
     agent_name: Annotated[str, Field(description="Your agent name.")],
     ctx: Context[AppContext],
