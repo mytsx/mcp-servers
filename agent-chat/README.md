@@ -12,6 +12,10 @@ Birden fazla Claude Code agent'ının birbirleriyle iletişim kurmasını sağla
 - Stale agent temizleme (5 dk inaktif)
 - Thread-safe dosya okuma/yazma (fcntl lock)
 - Admin/manager için tüm mesajları okuma
+- **Structured output**: her tool tipli JSON döner (`Message`, `AgentInfo`, `RoomInfo` modelleri)
+- **Resources**: `chat://rooms` ve `chat://rooms/{room}/messages` ile oda listesi ve tam geçmiş
+- **Prompt**: `summarize_room` — bir odanın konuşmasını özetleten hazır şablon
+- **Onay sorusu**: `clear_room` silmeden önce kullanıcıya elicitation ile sorar
 
 ## Kurulum
 
@@ -104,10 +108,24 @@ Mevcut odalari ve agent/mesaj sayilarini listele.
 ```
 
 ### `clear_room`
-Odayi temizle (tum mesajlar ve agent kayitlari silinir).
+Odayi temizle (tum mesajlar ve agent kayitlari silinir). Odada silinecek bir sey varsa
+once kullaniciya onay sorusu sorulur; onay verilmezse hicbir sey silinmez.
 ```json
 {"room": "backend-team"}
 ```
+
+## Kaynaklar (Resources)
+
+| URI | Aciklama |
+|-----|----------|
+| `chat://rooms` | Tum odalar, agent ve mesaj sayilariyla |
+| `chat://rooms/{room}/messages` | Bir odadaki butun mesajlar, eskiden yeniye |
+
+## Promptlar
+
+| Ad | Aciklama |
+|----|----------|
+| `summarize_room` | Bir odanin gecmisini oku ve konulari, kararlari, cevapsiz sorulari ozetle |
 
 ## Kullanim Senaryosu
 
@@ -161,6 +179,13 @@ list_rooms
 - `fcntl` file locking ile thread-safe okuma/yazma
 - 5 dakika inaktif agent'lar otomatik temizlenir
 - `expects_reply: false` ile sonsuz mesaj dongusu onlenir
+- Mesaj okuyan tool'lar cagiran agent'in `last_seen` degerini gunceller; bu yuzden
+  `read_only_hint` **false** olarak isaretlidir (gercekten yan etkileri var)
+
+## Gereksinimler
+
+Python 3.10+ ve MCP SDK 2.x (`mcp>=2.2,<3`). Sunucu 2026-07-28 protokol revizyonunu
+konusur, ayni surecten eski MCP istemcilerine de hizmet verir.
 
 ## License
 

@@ -21,20 +21,8 @@ cp .env.example .env
 # Start the MCP server
 npm start
 
-# Run basic test
-node test.js
-```
-
-### Testing Individual Components
-```bash
-# Test manual login flow
-node test-manual.js
-
-# Test screenshot functionality
-node test-screenshot.js
-
-# Test OCR integration
-node test-ocr-integration.js
+# Run the smoke test (in-process, no browser launched)
+npm test
 ```
 
 ## Architecture
@@ -42,10 +30,15 @@ node test-ocr-integration.js
 ### Core Components
 
 1. **MCP Server Implementation** (`server.js`):
-   - Uses `@modelcontextprotocol/sdk` v0.5.0
-   - Implements StdioServerTransport for Claude Desktop communication
-   - Maintains global browser state (browser, context, page)
-   - Session persistence through `session-state.json`
+   - Uses `@modelcontextprotocol/server` 2.x, speaking protocol revision 2026-07-28
+     while still serving 2025-era clients
+   - `buildServer()` is a factory; `serveStdio(buildServer)` pins one instance per
+     connection, which is what makes the 2026 era available over stdio
+   - Tools are registered with `registerTool` and Zod schemas; every tool declares an
+     `outputSchema` and returns `structuredContent`
+   - Browser state (browser, context, page) is module-level: it outlives any one
+     connection
+   - Session persistence through `session-state.json`, overridable with `SESSION_FILE`
 
 2. **Browser Automation**:
    - Playwright with Chromium in non-headless mode
@@ -64,6 +57,12 @@ node test-ocr-integration.js
 - **Session Persistence**: Browser cookies/storage saved locally
 - **OCR Approach**: Terminal Canvas rendering requires image-based text extraction
 - **Turkish Language**: Tool descriptions and messages are in Turkish
+- **Confirm Before Destroying**: `execute_command` and `execute_and_read` put destructive
+  commands to the user through elicitation before typing them. A client that cannot ask
+  gets a refusal — never an unconfirmed run
+- **Honest About OCR**: every text result carries a caveat, and `extract_text` also returns
+  the raw OCR output, so a misread is visible rather than presented as fact
+- **Screenshots Out of the Checkout**: written to `SCREENSHOT_DIR` (a temp dir by default)
 
 ### MCP Tools Available
 
@@ -81,7 +80,6 @@ node test-ocr-integration.js
 The `.gitignore` is configured to exclude:
 - `session-state.json` (browser session data)
 - `*.png` files (screenshots)
-- `test-*.js` files (may contain sensitive test data)
 - `.env` files
 
 ## Known Limitations

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mapeg-oracle-mcp"
-version = "1.0.0"
+version = "2.0.0"
 description = "Oracle Database MCP server for Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,7 +26,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp[cli]>=2.2,<3",
+    "anyio>=4.5",
     "oracledb>=2.0.0",
     "python-dotenv>=1.0.0",
 ]

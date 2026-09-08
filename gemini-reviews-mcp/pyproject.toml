@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gemini-reviews-mcp"
-version = "1.0.0"
+version = "2.0.0"
 description = "Gemini PR Reviews MCP server - Fetch Gemini Code Assist reviews from GitHub PRs"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,9 +20,14 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "mcp>=1.0.0",
-    "requests>=2.31.0",
+    "mcp[cli]>=2.2,<3",
+    "httpx2>=2.5.0",
     "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
 ]
 
 [project.urls]

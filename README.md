@@ -2,10 +2,45 @@
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
 [![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 A collection of [Model Context Protocol](https://modelcontextprotocol.io) servers for databases, remote access, automation, and developer tools. Each server works standalone with any MCP-compatible client.
+
+All nine servers run on MCP SDK 2.x and speak protocol revision **2026-07-28**, while still
+serving 2025-era clients from the same process. What that buys you, across the board:
+
+- **Structured output** — every tool declares an `outputSchema` and returns `structuredContent`,
+  so results are typed JSON instead of formatted text a client has to parse back
+- **Real tool errors** — failures come back with `isError`, not as text that looks like an answer
+- **Confirmation before damage** — destructive operations (write queries, `rm -rf`, killing a
+  process, overwriting a file, wiping a chat room) ask the user first, and skip the question
+  when there is nothing to lose
+- **Progress and cancellation** — long operations report progress; cancelling a call cancels
+  the work behind it
+- **Resources and prompts** — schemas, logs and histories are readable as resources, with
+  ready-made prompts for the common investigations
+- **Tool annotations** — `readOnlyHint` / `destructiveHint` / `idempotentHint` on every tool
+
+See [MIGRATION-V2.md](./MIGRATION-V2.md) for the per-server record of what changed.
+
+## Tests
+
+```bash
+./scripts/run-tests.sh
+```
+
+Each server has its own suite: `pytest` for the Python servers, `npm test` for the Node ones.
+The PostgreSQL and Oracle suites need a live database and skip themselves when one is not
+configured — `docker-compose.yml` brings up both, and the script's header has the environment
+variables to export.
+
+## Releasing
+
+See [RELEASING.md](./RELEASING.md). `scripts/build-release.sh` produces every
+distributable and `scripts/verify-release.py` installs each one into a throwaway
+environment and starts it — the check that catches packaging bugs the test
+suites cannot see.
 
 ## Servers
 

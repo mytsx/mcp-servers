@@ -1,537 +1,627 @@
 #!/usr/bin/env node
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { 
-  CallToolRequestSchema, 
-  ListToolsRequestSchema 
-} from '@modelcontextprotocol/sdk/types.js';
+import { McpServer } from '@modelcontextprotocol/server';
+import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { chromium } from 'playwright';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import Tesseract from 'tesseract.js';
 import dotenv from 'dotenv';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import Tesseract from 'tesseract.js';
+import { z } from 'zod';
 
-// Load environment variables
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const SESSION_FILE = path.join(__dirname, 'session-state.json');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Where the browser session state is kept. Overridable so a second terminal
+// — or a test — does not overwrite or delete the default one.
+const SESSION_FILE = process.env.SESSION_FILE || path.join(__dirname, 'session-state.json');
 
 // Configuration from environment
 const DEFAULT_TERMINAL_URL = process.env.TERMINAL_URL || '';
-const WAIT_AFTER_COMMAND = parseInt(process.env.WAIT_AFTER_COMMAND || '2000');
-const WAIT_AFTER_CLEAR = parseInt(process.env.WAIT_AFTER_CLEAR || '1000');
-const WAIT_AFTER_CLICK = parseInt(process.env.WAIT_AFTER_CLICK || '500');
+const WAIT_AFTER_COMMAND = Number.parseInt(process.env.WAIT_AFTER_COMMAND || '2000', 10);
+const WAIT_AFTER_CLEAR = Number.parseInt(process.env.WAIT_AFTER_CLEAR || '1000', 10);
+const WAIT_AFTER_CLICK = Number.parseInt(process.env.WAIT_AFTER_CLICK || '500', 10);
 
-// Create server
-const server = new Server(
-  {
-    name: 'ssh-terminal-mcp',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
+// Screenshots land outside the package by default, so running the server does
+// not litter the checkout.
+const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), 'asger-terminal-mcp');
 
-// Global state
+// Commands that destroy something on the remote host. These are confirmed with
+// the user before they are typed into the terminal.
+// An `rm` whose options include a recursive or force flag, wherever it appears:
+// `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`. Matching only the
+// first option let `rm -v -r /path` and `rm --recursive --force /path` through.
+// GNU rm accepts options before *and* after the file operands, so the whole
+// argument list is scanned — `rm /tmp/missing -rf /var` deletes recursively.
+// The scan stops at a command separator so a later command is not mistaken for
+// this one's operands.
+const RM_DESTRUCTIVE =
+  /\brm\s+(?:[^\s;|&]+\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
+
+const DESTRUCTIVE_PATTERNS = [
+  [RM_DESTRUCTIVE, 'dosya/dizin siliyor'],
+  [/\b(shutdown|reboot|halt|poweroff)\b|\binit\s+[06]\b/i, 'sunucuyu kapatıyor/yeniden başlatıyor'],
+  [/\bmkfs\b|\bdd\s+.*of=\/dev\//i, 'diski biçimlendiriyor'],
+  [/\b(kill\s+-9|killall|pkill)\b/i, 'süreçleri zorla sonlandırıyor'],
+  [
+    // Scan the whole option prefix, and match both spellings of recursive. The
+    // command name is case-insensitive; the short flag is not, because
+    // `chmod -R` and `chmod -r` are different things.
+    // Options can follow the operands: `chmod 755 /srv -R` is recursive.
+    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:[^\s;|&]+\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
+    'izinleri özyinelemeli değiştiriyor',
+  ],
+  [/\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b/i, 'paket kaldırıyor'],
+  [/\bdocker\s+(rm|rmi|prune|system\s+prune)\b/i, 'Docker kaynaklarını siliyor'],
+  [/\b(drop\s+(database|table)|truncate\s+table)\b/i, 'veritabanı nesnesi siliyor'],
+  [/\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f)\b/i, 'commit edilmemiş değişiklikleri siliyor'],
+  [/>\s*\/(?!tmp)/, 'sistem dosyasının üzerine yazıyor'],
+];
+
+// Browser state, shared across tool calls for the life of the process. The
+// browser outlives any one connection, so it is not per-server state.
 let browser = null;
 let context = null;
 let page = null;
 
 async function loadSession() {
   try {
-    const sessionData = await fs.readFile(SESSION_FILE, 'utf-8');
-    return JSON.parse(sessionData);
-  } catch (error) {
+    return JSON.parse(await fs.readFile(SESSION_FILE, 'utf-8'));
+  } catch {
     return null;
   }
 }
 
-async function saveSession() {
-  if (context) {
-    const state = await context.storageState();
-    await fs.writeFile(SESSION_FILE, JSON.stringify(state, null, 2));
+/** The open page, or an error telling the caller to open the terminal first. */
+function requirePage() {
+  if (!page) {
+    throw new Error('Terminal açık değil. Önce open_terminal aracını çağırın.');
   }
+  return page;
 }
 
-// List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'open_terminal',
-        description: 'Terminal URL\'sini aç (manuel giriş için)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            url: { 
-              type: 'string', 
-              description: `Terminal URL (varsayılan: ${DEFAULT_TERMINAL_URL || 'ayarlanmamış'})` 
-            }
-          },
-          required: []
-        }
-      },
-      {
-        name: 'save_session',
-        description: 'Giriş yaptıktan sonra oturumu kaydet',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      },
-      {
-        name: 'execute_command',
-        description: 'Terminal komutu çalıştır (önce ekranı temizler)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            command: { type: 'string', description: 'Çalıştırılacak komut' },
-            clear_before: { type: 'boolean', description: 'Komuttan önce ekranı temizle (varsayılan: true)' }
-          },
-          required: ['command']
-        }
-      },
-      {
-        name: 'execute_and_read',
-        description: 'Komutu çalıştır ve çıktıyı oku (ekranı temizler, komutu çalıştırır, screenshot alır)',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            command: { type: 'string', description: 'Çalıştırılacak komut' }
-          },
-          required: ['command']
-        }
-      },
-      {
-        name: 'take_screenshot',
-        description: 'Terminal ekran görüntüsü al',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      },
-      {
-        name: 'extract_text',
-        description: 'Son ekran görüntüsünden metni çıkarmaya çalış',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      },
-      {
-        name: 'disconnect',
-        description: 'Terminal bağlantısını kapat',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      },
-      {
-        name: 'clear_session',
-        description: 'Kayıtlı oturumu temizle',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      }
-    ]
-  };
-});
+/**
+ * The individual commands in a shell line, each judged on its own.
+ *
+ * Quote characters and expansions are removed, not replaced with a space: a
+ * shell concatenates the fragments of one word, so `r''m -rf /`, `r$()m -rf /`
+ * and `r${x}m -rf /` all run `rm`. Turning them into spaces produced `r  m`,
+ * which matched nothing.
+ */
+function commandSegments(command) {
+  return command
+    .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, '')
+    .replace(/['"\\]/g, '')
+    .split(/\|\||&&|[;\n|&]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
 
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-  
-  console.error(`Tool called: ${name}`, args);
-  
-  switch (name) {
-    case 'open_terminal':
-      return await openTerminal(args);
-    case 'save_session':
-      return await saveSessionHandler();
-    case 'execute_command':
-      return await executeCommand(args);
-    case 'execute_and_read':
-      return await executeAndRead(args);
-    case 'take_screenshot':
-      return await takeScreenshot();
-    case 'extract_text':
-      return await extractText();
-    case 'disconnect':
-      return await disconnect();
-    case 'clear_session':
-      return await clearSession();
-    default:
-      throw new Error(`Unknown tool: ${name}`);
-  }
-});
+/** Shell expansions, which decide on the host what the command actually is. */
+const EXPANSION = /\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/;
 
-async function openTerminal({ url = DEFAULT_TERMINAL_URL } = {}) {
-  try {
-    if (!url) {
-      throw new Error('Terminal URL belirtilmedi. Lütfen .env dosyasında TERMINAL_URL ayarlayın veya url parametresi gönderin.');
+/**
+ * Why this command needs confirming, or null when it is ordinary.
+ *
+ * A command containing an expansion is always confirmed. Removing it catches an
+ * expansion that evaluates to nothing — `r$()m` is `rm` — but not one that
+ * evaluates to something: `$(echo rm) -rf /` deletes, and no reading of this
+ * text can say so.
+ */
+export function destructiveReason(command) {
+  for (const segment of commandSegments(command)) {
+    for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
+      if (pattern.test(segment)) return reason;
     }
-    
-    browser = await chromium.launch({ 
-      headless: false,
-      args: ['--disable-blink-features=AutomationControlled']
+  }
+  if (EXPANSION.test(command)) {
+    return 'kabuk genişletmesi içeriyor; ne çalıştıracağı önceden bilinemiyor';
+  }
+  return null;
+}
+
+/**
+ * Ask the user before running a destructive command. Returns true to proceed.
+ * A client with no elicitation support refuses rather than running it blind.
+ */
+async function confirmCommand(ctx, command) {
+  const reason = destructiveReason(command);
+  if (!reason) return true;
+
+  let answer;
+  try {
+    answer = await ctx.mcpReq.elicitInput({
+      message: `Bu komut ${reason}:\n\n    ${command}\n\nTerminalde çalıştırılsın mı?`,
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          confirm: {
+            type: 'boolean',
+            title: 'Çalıştır',
+            description: 'Komut uzak terminalde çalıştırılsın mı?',
+          },
+        },
+        required: ['confirm'],
+      },
     });
-    
+  } catch (error) {
+    // The elicitation layer may reject with something that is not an Error;
+    // reading .message off it would lose the reason for the refusal.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Yıkıcı komut için onay alınamadı (${reason}); komut çalıştırılmadı: ${command}`,
+      { cause: error }
+    );
+  }
+
+  return answer.action === 'accept' && answer.content?.confirm === true;
+}
+
+/** Where a screenshot for `label` should be written. */
+async function screenshotPath(label) {
+  await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
+  const safeName = label.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 50) || 'terminal';
+  return path.join(SCREENSHOT_DIR, `${safeName}-${Date.now()}.png`);
+}
+
+/** Focus the terminal, optionally clear it, then type a command and press Enter. */
+async function typeCommand(command, { clearBefore }) {
+  const target = requirePage();
+
+  await target.mouse.click(640, 400);
+  await target.waitForTimeout(WAIT_AFTER_CLICK);
+
+  if (clearBefore) {
+    await target.keyboard.type('clear');
+    await target.keyboard.press('Enter');
+    await target.waitForTimeout(WAIT_AFTER_CLEAR);
+  }
+
+  await target.keyboard.type(command);
+  await target.keyboard.press('Enter');
+  await target.waitForTimeout(WAIT_AFTER_COMMAND);
+}
+
+/**
+ * OCR the current terminal screen.
+ *
+ * The terminal renders to a canvas, so there is no DOM text to read; a
+ * screenshot through Tesseract is the only thing available here.
+ */
+async function readScreen(ctx, { keepFile = false, label = 'ocr' } = {}) {
+  const target = requirePage();
+  const file = await screenshotPath(label);
+  await target.screenshot({ path: file });
+
+  const progressToken = ctx?.mcpReq?._meta?.progressToken;
+  const notifyProgress = async (progress) => {
+    if (progressToken === undefined) return;
+    await ctx.mcpReq.notify({
+      method: 'notifications/progress',
+      params: { progressToken, progress, total: 1, message: 'OCR' },
+    });
+  };
+
+  let text = '';
+  try {
+    const result = await Tesseract.recognize(file, 'eng', {
+      logger: (m) => {
+        if (m.status === 'recognizing text') {
+          notifyProgress(m.progress).catch(() => {});
+        }
+      },
+      tessedit_char_whitelist:
+        '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~ \n',
+      preserve_interword_spaces: '1',
+      tessedit_pageseg_mode: '6', // Uniform block of text
+    });
+    text = result.data.text;
+  } finally {
+    if (!keepFile) await fs.unlink(file).catch(() => {});
+  }
+
+  return { rawText: text, lines: extractOutputLines(text), screenshotPath: keepFile ? file : null };
+}
+
+/**
+ * Trim the OCR'd screen down to the command's output: drop everything before
+ * the prompt line that ran it, and stop at the next prompt.
+ */
+function extractOutputLines(text) {
+  const output = [];
+  let seenCommand = false;
+
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+
+    if (!seenCommand && trimmed.includes('$')) {
+      seenCommand = true;
+      continue;
+    }
+    if (seenCommand && trimmed.includes('$') && trimmed.includes('@')) {
+      break; // the next prompt: the output ended here
+    }
+    if (seenCommand) output.push(trimmed);
+  }
+
+  return output;
+}
+
+const OCR_CAVEAT =
+  'Metin OCR ile okundu; terminal canvas olarak çizildiği için karakterler yanlış tanınmış olabilir. ' +
+  'Kritik değerleri ekran görüntüsünden doğrulayın.';
+
+// ---------------------------------------------------------------------------
+// Tools
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fresh server. `serveStdio` calls this once per connection, so that a
+ * connection's protocol era is pinned to its own instance.
+ */
+export function buildServer() {
+  const server = new McpServer({
+    name: 'asger-terminal-mcp',
+    version: '2.0.0',
+  });
+
+  server.registerTool(
+  'open_terminal',
+  {
+    title: 'Terminali aç',
+    description:
+      "Terminal URL'sini bir tarayıcıda açar. Kayıtlı oturum varsa yüklenir; yoksa giriş " +
+      'sayfası açılır ve giriş yaptıktan sonra save_session çağrılmalıdır.',
+    inputSchema: z.object({
+      url: z
+        .string()
+        .url()
+        .optional()
+        .describe(`Terminal URL. Varsayılan: ${DEFAULT_TERMINAL_URL || 'ayarlanmamış'}`),
+    }),
+    outputSchema: z.object({
+      url: z.string(),
+      loginRequired: z.boolean().describe('true ise manuel giriş yapıp save_session çağırın.'),
+      sessionRestored: z.boolean().describe('Kayıtlı oturum yüklendi mi.'),
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async ({ url }) => {
+    const target = url || DEFAULT_TERMINAL_URL;
+    if (!target) {
+      throw new Error(
+        'Terminal URL belirtilmedi. .env dosyasında TERMINAL_URL ayarlayın ya da url parametresi gönderin.'
+      );
+    }
+
+    if (browser) await closeBrowser();
+
+    browser = await chromium.launch({
+      headless: false,
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+
     const savedSession = await loadSession();
     context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
-      ...(savedSession ? { storageState: savedSession } : {})
+      ...(savedSession ? { storageState: savedSession } : {}),
     });
-    
     page = await context.newPage();
-    
-    await page.goto(url);
+
+    await page.goto(target);
     await page.waitForTimeout(5000);
-    
-    const hasPassword = await page.$('input[type="password"]');
-    
-    if (hasPassword) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'Giriş sayfası açıldı. Lütfen manuel olarak giriş yapın ve ardından save_session komutunu çalıştırın.'
-          }
-        ]
-      };
-    } else {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: 'Terminal hazır! Önceki oturum başarıyla yüklendi.'
-          }
-        ]
-      };
-    }
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Bağlantı hatası: ${error.message}`
-        }
-      ]
-    };
-  }
-}
 
-async function saveSessionHandler() {
-  try {
-    if (!page) {
-      throw new Error('Önce open_terminal ile terminali açın');
-    }
-    
-    await saveSession();
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: 'Oturum başarıyla kaydedildi! Artık terminal komutlarını kullanabilirsiniz.'
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Kaydetme hatası: ${error.message}`
-        }
-      ]
-    };
-  }
-}
+    const loginRequired = (await page.$('input[type="password"]')) !== null;
+    const result = { url: target, loginRequired, sessionRestored: savedSession !== null };
 
-async function executeCommand({ command, clear_before = true }) {
-  try {
-    if (!page) {
-      throw new Error('Önce open_terminal ile terminali açın');
-    }
-    
-    // Sayfaya tıkla (focus için)
-    await page.mouse.click(640, 400);
-    await page.waitForTimeout(WAIT_AFTER_CLICK);
-    
-    // Önce ekranı temizle
-    if (clear_before) {
-      await page.keyboard.type('clear');
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(WAIT_AFTER_CLEAR);
-    }
-    
-    // Komutu yaz
-    await page.keyboard.type(command);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(WAIT_AFTER_COMMAND);
-    
     return {
       content: [
         {
           type: 'text',
-          text: `Komut çalıştırıldı: ${command}`
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Komut hatası: ${error.message}`
-        }
-      ]
-    };
-  }
-}
-
-async function executeAndRead({ command }) {
-  try {
-    if (!page) {
-      throw new Error('Önce open_terminal ile terminali açın');
-    }
-    
-    // Sayfaya tıkla (focus için)
-    await page.mouse.click(640, 400);
-    await page.waitForTimeout(WAIT_AFTER_CLICK);
-    
-    // Ekranı temizle
-    await page.keyboard.type('clear');
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(WAIT_AFTER_CLEAR);
-    
-    // Komutu yaz
-    await page.keyboard.type(command);
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(WAIT_AFTER_COMMAND);
-    
-    // Ekran görüntüsü al
-    const timestamp = Date.now();
-    const safeName = command.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
-    const filename = `output-${safeName}-${timestamp}.png`;
-    const filepath = path.join(__dirname, filename);
-    
-    await page.screenshot({ path: filepath });
-    
-    // Metni çıkarmaya çalış (OCR ile)
-    const extractedText = await extractTextFromTerminal();
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Command: ${command}\n\nExtracted Output:\n${extractedText}\n\nScreenshot saved: ${filename}`
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Hata: ${error.message}`
-        }
-      ]
-    };
-  }
-}
-
-async function takeScreenshot() {
-  try {
-    if (!page) {
-      throw new Error('Önce open_terminal ile terminali açın');
-    }
-    
-    const timestamp = Date.now();
-    const filename = `terminal-${timestamp}.png`;
-    const filepath = path.join(__dirname, filename);
-    
-    await page.screenshot({ path: filepath });
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Ekran görüntüsü alındı: ${filename}`
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Screenshot hatası: ${error.message}`
-        }
-      ]
-    };
-  }
-}
-
-async function extractText() {
-  try {
-    if (!page) {
-      throw new Error('Önce open_terminal ile terminali açın');
-    }
-    
-    const extractedText = await extractTextFromTerminal();
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: extractedText || 'Metin çıkarılamadı'
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Metin çıkarma hatası: ${error.message}`
-        }
-      ]
-    };
-  }
-}
-
-async function extractTextFromTerminal() {
-  try {
-    // Take a screenshot first
-    const timestamp = Date.now();
-    const tempFile = path.join(__dirname, `temp-ocr-${timestamp}.png`);
-    await page.screenshot({ path: tempFile });
-    
-    // Use Tesseract.js with better settings for terminal text
-    const { data: { text } } = await Tesseract.recognize(
-      tempFile,
-      'eng',
-      {
-        logger: m => {
-          if (m.status === 'recognizing text') {
-            console.error(`OCR Progress: ${Math.round(m.progress * 100)}%`);
-          }
+          text: loginRequired
+            ? 'Giriş sayfası açıldı. Manuel olarak giriş yapın, ardından save_session aracını çağırın.'
+            : 'Terminal hazır. Önceki oturum yüklendi.',
         },
-        tessedit_char_whitelist: '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~ \n',
-        preserve_interword_spaces: '1',
-        tessedit_pageseg_mode: '6', // Uniform block of text
-      }
-    );
-    
-    // Clean up temp file
-    await fs.unlink(tempFile).catch(() => {});
-    
-    // Process the text to extract command output
-    const lines = text.split('\n');
-    const processedLines = [];
-    let foundCommand = false;
-    let foundPrompt = false;
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      
-      // Look for command line (contains $ and the command)
-      if (trimmed.includes('$') && !foundCommand) {
-        foundCommand = true;
-        const commandPart = trimmed.split('$')[1]?.trim();
-        if (commandPart) {
-          processedLines.push(`Command: ${commandPart}`);
-        }
-        continue;
-      }
-      
-      // Skip the next prompt line (after output)
-      if (foundCommand && trimmed.includes('$') && trimmed.includes('@')) {
-        foundPrompt = true;
-        continue;
-      }
-      
-      // Add output lines
-      if (foundCommand && !foundPrompt) {
-        processedLines.push(trimmed);
-      }
+      ],
+      structuredContent: result,
+    };
+  }
+);
+
+  server.registerTool(
+  'save_session',
+  {
+    title: 'Oturumu kaydet',
+    description:
+      'Tarayıcıdaki oturum durumunu (çerezler, storage) diske kaydeder; sonraki açılışta ' +
+      'yeniden giriş gerekmez.',
+    outputSchema: z.object({ sessionFile: z.string() }),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async () => {
+    requirePage();
+    const state = await context.storageState();
+    await fs.writeFile(SESSION_FILE, JSON.stringify(state, null, 2));
+    return {
+      content: [{ type: 'text', text: `Oturum kaydedildi: ${SESSION_FILE}` }],
+      structuredContent: { sessionFile: SESSION_FILE },
+    };
+  }
+);
+
+  server.registerTool(
+  'execute_command',
+  {
+    title: 'Komut çalıştır',
+    description:
+      'Terminale bir komut yazar ve Enter\'a basar. Çıktıyı okumaz — çıktı için ' +
+      'execute_and_read kullanın. Yıkıcı komutlar önce kullanıcıya sorulur.',
+    inputSchema: z.object({
+      command: z.string().min(1).describe('Çalıştırılacak komut.'),
+      clear_before: z
+        .boolean()
+        .default(true)
+        .describe('Komuttan önce ekranı temizle.'),
+    }),
+    outputSchema: z.object({
+      command: z.string(),
+      cleared: z.boolean(),
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  },
+  async ({ command, clear_before }, ctx) => {
+    requirePage();
+    if (!(await confirmCommand(ctx, command))) {
+      throw new Error(`Kullanıcı komutu onaylamadı; hiçbir şey çalıştırılmadı: ${command}`);
     }
-    
-    const result = processedLines.join('\n');
-    return result || 'No text extracted from terminal';
-    
-  } catch (error) {
-    console.error('OCR error:', error);
-    return 'OCR extraction failed. Please check the screenshot.';
-  }
-}
 
-async function disconnect() {
-  try {
-    if (browser) {
-      await browser.close();
-      browser = null;
-      context = null;
-      page = null;
+    await typeCommand(command, { clearBefore: clear_before });
+    return {
+      content: [{ type: 'text', text: `Komut çalıştırıldı: ${command}` }],
+      structuredContent: { command, cleared: clear_before },
+    };
+  }
+);
+
+  server.registerTool(
+  'execute_and_read',
+  {
+    title: 'Komut çalıştır ve oku',
+    description:
+      'Ekranı temizler, komutu çalıştırır, ekran görüntüsü alır ve çıktıyı OCR ile okur. ' +
+      'Yıkıcı komutlar önce kullanıcıya sorulur.',
+    inputSchema: z.object({
+      command: z.string().min(1).describe('Çalıştırılacak komut.'),
+    }),
+    outputSchema: z.object({
+      command: z.string(),
+      output: z.string().describe('OCR ile okunan komut çıktısı.'),
+      lines: z.array(z.string()).describe('Çıktının satır satır hâli.'),
+      screenshotPath: z.string().nullable().describe('Kaydedilen ekran görüntüsünün yolu.'),
+      caveat: z.string().describe('OCR güvenilirliği hakkında uyarı.'),
+    }),
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  },
+  async ({ command }, ctx) => {
+    requirePage();
+    if (!(await confirmCommand(ctx, command))) {
+      throw new Error(`Kullanıcı komutu onaylamadı; hiçbir şey çalıştırılmadı: ${command}`);
     }
-    
+
+    await typeCommand(command, { clearBefore: true });
+    const { lines, screenshotPath: file } = await readScreen(ctx, {
+      keepFile: true,
+      label: command,
+    });
+    const output = lines.join('\n');
+
     return {
       content: [
         {
           type: 'text',
-          text: 'Bağlantı kapatıldı'
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Kapatma hatası: ${error.message}`
-        }
-      ]
+          text: `Command: ${command}\n\nOutput:\n${output || '(metin okunamadı)'}\n\n${OCR_CAVEAT}\nScreenshot: ${file}`,
+        },
+      ],
+      structuredContent: { command, output, lines, screenshotPath: file, caveat: OCR_CAVEAT },
     };
   }
+);
+
+  server.registerTool(
+  'take_screenshot',
+  {
+    title: 'Ekran görüntüsü al',
+    description:
+      'Terminalin ekran görüntüsünü alır ve hem görüntü olarak hem de dosya yolu olarak döner.',
+    outputSchema: z.object({
+      screenshotPath: z.string(),
+      widthHint: z.number().describe('Görüntünün piksel genişliği.'),
+      heightHint: z.number().describe('Görüntünün piksel yüksekliği.'),
+    }),
+    // Writes a PNG to SCREENSHOT_DIR and keeps it, so it is not read-only:
+    // a client that calls read-only tools freely would accumulate captures.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async () => {
+    const target = requirePage();
+    const file = await screenshotPath('terminal');
+    const buffer = await target.screenshot({ path: file });
+    const viewport = target.viewportSize() ?? { width: 0, height: 0 };
+
+    return {
+      content: [
+        { type: 'image', data: buffer.toString('base64'), mimeType: 'image/png' },
+        { type: 'text', text: `Ekran görüntüsü kaydedildi: ${file}` },
+      ],
+      structuredContent: {
+        screenshotPath: file,
+        widthHint: viewport.width,
+        heightHint: viewport.height,
+      },
+    };
+  }
+);
+
+  server.registerTool(
+  'extract_text',
+  {
+    title: 'Ekrandaki metni oku',
+    description:
+      'Terminalin o anki ekranını OCR ile metne çevirir. Terminal canvas olarak çizildiği ' +
+      'için DOM metni yoktur; sonuç OCR doğruluğuyla sınırlıdır.',
+    outputSchema: z.object({
+      output: z.string().describe('Komut çıktısı olarak ayıklanan kısım.'),
+      lines: z.array(z.string()),
+      rawText: z.string().describe('OCR çıktısının tamamı, ayıklama öncesi.'),
+      caveat: z.string(),
+    }),
+    // Not read-only: taking the screenshot creates SCREENSHOT_DIR and writes a
+    // PNG there before deleting it again, so the directory outlives the call.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async (ctx) => {
+    requirePage();
+    const { rawText, lines } = await readScreen(ctx, { label: 'extract' });
+    const output = lines.join('\n');
+    if (!rawText.trim()) {
+      throw new Error('Ekrandan hiç metin okunamadı. Terminal görünür ve okunabilir durumda mı?');
+    }
+    return {
+      content: [{ type: 'text', text: `${output || rawText.trim()}\n\n${OCR_CAVEAT}` }],
+      structuredContent: { output, lines, rawText, caveat: OCR_CAVEAT },
+    };
+  }
+);
+
+  server.registerTool(
+  'disconnect',
+  {
+    title: 'Bağlantıyı kapat',
+    description: 'Tarayıcıyı kapatır ve terminal oturumunu bırakır.',
+    outputSchema: z.object({ wasOpen: z.boolean() }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+  },
+  async () => {
+    const wasOpen = browser !== null;
+    await closeBrowser();
+    return {
+      content: [{ type: 'text', text: wasOpen ? 'Bağlantı kapatıldı.' : 'Zaten kapalıydı.' }],
+      structuredContent: { wasOpen },
+    };
+  }
+);
+
+  server.registerTool(
+  'clear_session',
+  {
+    title: 'Kayıtlı oturumu sil',
+    description:
+      'Diskteki oturum dosyasını siler. Sonraki open_terminal çağrısında yeniden giriş gerekir.',
+    outputSchema: z.object({ existed: z.boolean(), sessionFile: z.string() }),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+  },
+  async () => {
+    let existed = true;
+    try {
+      await fs.unlink(SESSION_FILE);
+    } catch {
+      existed = false;
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: existed ? 'Kayıtlı oturum silindi.' : 'Silinecek kayıtlı oturum yoktu.',
+        },
+      ],
+      structuredContent: { existed, sessionFile: SESSION_FILE },
+    };
+  }
+);
+
+  server.registerPrompt(
+  'terminal_arastir',
+  {
+    title: 'Terminalde araştır',
+    description: 'Uzak sunucuda bir soruyu adım adım, komut çalıştırarak araştır.',
+    argsSchema: z.object({
+      soru: z.string().describe('Sunucuda cevaplanacak soru.'),
+    }),
+  },
+  ({ soru }) => ({
+    messages: [
+      {
+        role: 'user',
+        content: {
+          type: 'text',
+          text:
+            `Uzak terminalde şu soruyu araştır: ${soru}\n\n` +
+            '1. Gerekirse `open_terminal` ile terminali aç.\n' +
+            '2. Her adımda tek bir komut çalıştır; `execute_and_read` kullan ki çıktıyı görebilesin.\n' +
+            '3. Çıktı OCR ile okunuyor: rakam ve yol gibi kritik değerleri şüpheyle karşıla, ' +
+            'gerekirse `take_screenshot` ile görüntüden doğrula.\n' +
+            '4. Okunamayan çıktıyı tahmin etme; komutu daha dar bir çıktı verecek şekilde tekrar yaz ' +
+            '(head, grep, wc gibi).\n' +
+            '5. Sonunda cevabı, dayandığın komut çıktılarıyla birlikte yaz.',
+        },
+      },
+      ],
+    })
+  );
+
+  return server;
 }
 
-async function clearSession() {
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+async function closeBrowser() {
+  if (browser) {
+    await browser.close().catch(() => {});
+  }
+  browser = null;
+  context = null;
+  page = null;
+}
+
+/**
+ * Whether this module is the program being run.
+ *
+ * npm installs the bin as a symlink in node_modules/.bin, so `process.argv[1]`
+ * is that link while `import.meta.url` is the real file. Comparing them
+ * unresolved meant an installed server started nothing at all and exited
+ * silently — it only worked when the file was run by its own path.
+ */
+function isProgram() {
+  const entry = process.argv[1];
+  if (!entry) return false;
   try {
-    await fs.unlink(SESSION_FILE).catch(() => {});
-    return {
-      content: [
-        {
-          type: 'text',
-          text: 'Oturum bilgileri temizlendi'
-        }
-      ]
-    };
-  } catch (error) {
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Temizleme hatası: ${error.message}`
-        }
-      ]
-    };
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
   }
 }
 
-// Start server
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('SSH Terminal MCP server started');
-}
+// Only serve over stdio when run as the program; importing the module (tests)
+// gets buildServer without a transport attached. serveStdio serves both the
+// 2026-07-28 revision and the 2025-era protocol, picking per connection.
+if (isProgram()) {
+  try {
+    serveStdio(buildServer);
+    console.error('asger-terminal-mcp started');
+  } catch (error) {
+    console.error('Sunucu başlatılamadı:', error);
+    process.exit(1);
+  }
 
-main().catch(console.error);
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      closeBrowser().finally(() => process.exit(0));
+    });
+  }
+}

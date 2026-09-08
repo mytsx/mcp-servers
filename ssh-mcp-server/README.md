@@ -11,6 +11,18 @@ SSH üzerinden uzak Linux sunucularında komut çalıştırma ve sistem yönetim
 - **process_manager**: Process yönetimi
 - **sftp_download**: SFTP ile dosya indirme (text/base64)
 - **sftp_upload**: SFTP ile dosya yükleme (overwrite/append)
+- **ssh_reconnect**: Bağlantıyı kontrol et ve gerekirse tazele
+
+### 🆕 MCP 2.x ile gelenler
+- **Structured output**: Her tool tipli JSON döner. `execute_command` artık `exit_code`,
+  `stdout`, `stderr` ve `duration_ms` alanlarını ayrı ayrı veriyor — çıktı ile hata mesajı
+  aynı metin bloğunda karışmıyor.
+- **Onay soruları (elicitation)**: Yıkıcı işlemler çalıştırılmadan önce kullanıcıya sorulur —
+  silme/yeniden başlatma komutları, var olan bir dosyanın üzerine yazma, süreç sonlandırma.
+  Zararsız durumda soru sorulmaz (yeni dosya oluşturma, append, listeleme).
+- **Progress bildirimi**: `system_monitor` her metriği okurken ilerleme raporlar.
+- **Tool annotations**: Okuyan tool'lar `read_only_hint`, yazanlar `destructive_hint` taşır.
+- **Prompt**: `diagnose_server` — belirtiden nedene giden teşhis akışı.
 
 ### 📊 Kaynaklar (Resources)
 - **ssh://system**: Sistem bilgileri
@@ -141,13 +153,30 @@ python test_ssh.py
 
 ## 🔐 Güvenlik Özellikleri
 
-### Engellenen Komutlar
-- `rm -rf /`
+Güvenlik iki katmanlı: bazı komutlar hiç çalıştırılmaz, bazıları için kullanıcıya sorulur.
+
+### Hiçbir koşulda çalıştırılmayanlar
+- `rm -rf /` ve `rm -rf /*` (sistem dizinlerinin tamamı: `/etc`, `/usr`, `/var`, ...)
 - `format`, `mkfs`
-- `dd if=/dev/zero of=/dev/sda`
-- Fork bomb patterns
-- `shutdown`, `reboot`, `halt`
-- User deletion commands
+- `dd ... of=/dev/...`
+- Fork bomb desenleri
+- `sudo passwd`, `userdel`, `deluser`
+
+Bunlar tool hatası olarak reddedilir. Not: `rm -rf /var/tmp/build` gibi alt dizin silmeleri
+artık engellenmiyor — bir alt katmana, onay sorusuna düşüyor.
+
+### Önce kullanıcıya sorulanlar
+- Dosya/dizin silme (`rm -r`, `rm -f`)
+- `shutdown`, `reboot`, `halt`, `poweroff`, `init 0/6`
+- `kill -9`, `killall`, `pkill`
+- Özyinelemeli `chmod -R` / `chown -R`
+- Paket kaldırma (`apt remove`, `yum remove`, ...)
+- `docker rm/rmi/prune`
+- `git reset --hard`, `git clean -f`
+- Var olan bir dosyanın üzerine yazma (`file_operations` write, `sftp_upload` overwrite)
+- Süreç sonlandırma (`process_manager` kill) — hangi sürecin öldürüleceği soruda gösterilir
+
+Kullanıcı onay vermezse komut hiç çalıştırılmaz ve tool hata döner.
 
 ### Güvenlik Best Practices
 1. Sadece güvendiğiniz sunucularda kullanın
@@ -207,6 +236,25 @@ python test_ssh.py
   "mode": "overwrite"
 }
 ```
+
+### ssh_reconnect
+```json
+{
+  "force": false
+}
+```
+
+## 🧾 Promptlar
+
+| Ad | Açıklama |
+|----|----------|
+| `diagnose_server` | Bir belirtiden yola çıkıp sistem durumu, loglar ve süreçler üzerinden nedeni bulur |
+
+## 📐 Gereksinimler
+
+Python 3.10+ ve MCP SDK 2.x (`mcp>=2.2,<3`). Sunucu 2026-07-28 protokol revizyonunu konuşur,
+aynı süreçten eski MCP istemcilerine de hizmet verir. Tüm paramiko çağrıları worker thread'de
+çalışır; uzun süren bir komut artık event loop'u bloklamıyor.
 
 ## 🐛 Sorun Giderme
 

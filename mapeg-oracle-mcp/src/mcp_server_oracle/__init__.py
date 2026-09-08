@@ -1,12 +1,8 @@
 """
 Oracle MCP Server
-Natural language queries to Oracle database via MCP protocol
+Query and explore an Oracle database via the MCP protocol
 """
 
-__version__ = "1.0.0"
-__author__ = "Your Name"
+__version__ = "2.0.0"
+__author__ = "mytsx"
 __license__ = "MIT"
-
-from .server import OracleMCPServer
-
-__all__ = ["OracleMCPServer"]

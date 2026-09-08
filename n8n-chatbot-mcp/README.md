@@ -1,7 +1,7 @@
 # n8n Chatbot MCP Server
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/n8n-chatbot-mcp)](https://pypi.org/project/n8n-chatbot-mcp/)
 
@@ -14,6 +14,8 @@ Turn any [n8n](https://n8n.io) Chat Trigger webhook into an MCP tool. Just provi
 - **Multi-Turn** — Session ID support for contextual conversations
 - **Multiple Bots** — Register as many n8n chatbots as you want, each as a separate MCP server
 - **Additive Description** — Auto-discovered subtitle + optional extra context via env var
+- **Structured Output** — Answers come back as typed JSON (`answer`, `session_id`), not loose text
+- **Config Resource** — `n8n://config` exposes what auto-discovery found, for inspection and debugging
 
 ## Quick Start
 
@@ -164,6 +166,11 @@ pip install -e .
 | `N8N_CHATBOT_URL` | Yes | — | Full n8n Chat Trigger webhook URL |
 | `N8N_CHATBOT_DESCRIPTION` | No | — | Extra context **appended** to auto-discovered description |
 | `N8N_CHATBOT_TIMEOUT` | No | `120` | Request timeout in seconds |
+| `N8N_CHATBOT_VERIFY_TLS` | No | `true` | Set to `false` only for an n8n behind a self-signed certificate |
+
+TLS certificate verification is **on by default**. If your n8n uses a self-signed
+certificate the tool fails with an error naming `N8N_CHATBOT_VERIFY_TLS`; set it to `false`
+only when you also trust the network between you and that host.
 
 ### Auto-Discovery
 
@@ -214,7 +221,30 @@ Sends a question to the n8n chatbot and returns the response.
 | `question` | string | Yes | The question to ask |
 | `session_id` | string | No | Session ID for multi-turn conversations (auto-generated if omitted) |
 
+Returns structured output:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `answer` | string | The chatbot's answer |
+| `session_id` | string | Session this answer belongs to — pass it back to continue the conversation |
+
 </details>
+
+## Resource
+
+<details>
+<summary><code>n8n://config</code> — Auto-discovered chatbot configuration</summary>
+
+JSON document with the webhook URL, discovered name and description, welcome messages, the
+names of the request headers being sent, and the configured timeout. Useful when auto-discovery
+does not pick up what you expected.
+
+</details>
+
+## Requirements
+
+Python 3.10+ and MCP SDK 2.x (`mcp>=2.2,<3`). The server speaks the 2026-07-28 protocol
+revision and still serves older MCP clients from the same process.
 
 ## License
 
