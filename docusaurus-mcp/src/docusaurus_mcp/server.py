@@ -12,17 +12,30 @@ Environment variables:
 """
 
 import json
+import logging
 import os
 import re
 import sys
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from typing import Annotated
 from urllib.parse import urljoin, urlparse
 
-import httpx
+import anyio
+import httpx2
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
+
+from . import __version__
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -30,6 +43,9 @@ from mcp.server.fastmcp import FastMCP
 SITE_URL = os.environ.get("DOCUSAURUS_URL", "").rstrip("/")
 EXTRA_DESCRIPTION = os.environ.get("DOCUSAURUS_DESCRIPTION", "")
 TIMEOUT = int(os.environ.get("DOCUSAURUS_TIMEOUT", "30"))
+
+# How many pages or chunks to fetch at once while indexing.
+MAX_CONCURRENT_FETCHES = 10
 
 if not SITE_URL:
     print(
@@ -39,16 +55,88 @@ if not SITE_URL:
     )
     sys.exit(1)
 
-_client = httpx.Client(
-    timeout=TIMEOUT,
-    follow_redirects=True,
-    headers={"User-Agent": "docusaurus-mcp/1.0"},
-)
+
+def _new_client() -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
+        timeout=TIMEOUT,
+        follow_redirects=True,
+        headers={"User-Agent": f"docusaurus-mcp/{__version__}"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wire models
+# ---------------------------------------------------------------------------
+
+
+class DocSummary(BaseModel):
+    """One documentation page, without its body."""
+
+    id: str = Field(description="Short ID, usable as `doc_ref` in fetch_doc.")
+    title: str
+    url: str
+    path: str = Field(description="Site-relative path, also usable as `doc_ref`.")
+    category: str
+    description: str = ""
+
+
+class Category(BaseModel):
+    name: str
+    page_count: int
+    docs: list[DocSummary] = Field(default_factory=list)
+
+
+class DocStructure(BaseModel):
+    site_title: str
+    site_url: str
+    doc_count: int
+    categories: list[Category]
+
+
+class CategoryListing(BaseModel):
+    site_title: str
+    category: str = Field(description="The category listed, or empty when listing all of them.")
+    categories: list[Category]
+
+
+class SearchHit(BaseModel):
+    score: int = Field(description="Relevance: title matches weigh most, then description, then body.")
+    doc: DocSummary
+    snippet: str = Field(default="", description="Text around the first body match.")
+
+
+class SearchResults(BaseModel):
+    query: str
+    total_matching: int = Field(description="How many pages matched before `limit` was applied.")
+    hits: list[SearchHit]
+
+
+class DocContent(BaseModel):
+    """A page with its full body as markdown."""
+
+    id: str
+    title: str
+    url: str
+    path: str
+    category: str
+    description: str = ""
+    content: str = Field(description="The page body, converted to markdown.")
+
+
+class IndexStatus(BaseModel):
+    site_title: str
+    site_url: str
+    doc_count: int
+    spa_mode: bool = Field(
+        description="True when the site renders client-side and content came from webpack chunks."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
 def _unescape_js(s: str) -> str:
     """Unescape JavaScript string literal (handles surrogate pairs)."""
     s = s.replace('\\"', '"').replace("\\'", "'")
@@ -69,36 +157,10 @@ def _relpath(url: str) -> str:
     base = urlparse(SITE_URL).path.rstrip("/")
     path = urlparse(url).path
     if base and path.startswith(base):
-        path = path[len(base):]
+        path = path[len(base) :]
     return path.strip("/")
 
 
-# ---------------------------------------------------------------------------
-# Sitemap
-# ---------------------------------------------------------------------------
-def _fetch_sitemap() -> list[str]:
-    """Fetch sitemap.xml and return normalized URLs."""
-    resp = _client.get(f"{SITE_URL}/sitemap.xml")
-    resp.raise_for_status()
-    root = ET.fromstring(resp.text)
-    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    sp = urlparse(SITE_URL)
-    urls: list[str] = []
-    for loc in root.findall(".//s:loc", ns):
-        raw = (loc.text or "").strip()
-        if raw:
-            p = urlparse(raw)
-            urls.append(
-                raw.replace(
-                    f"{p.scheme}://{p.netloc}", f"{sp.scheme}://{sp.netloc}"
-                )
-            )
-    return urls
-
-
-# ---------------------------------------------------------------------------
-# HTML extraction (standard sites)
-# ---------------------------------------------------------------------------
 def _extract_html(html: str, page_url: str) -> tuple[str, str, str]:
     """Extract (title, description, markdown_content) from Docusaurus HTML."""
     soup = BeautifulSoup(html, "html.parser")
@@ -132,10 +194,18 @@ def _extract_html(html: str, page_url: str) -> tuple[str, str, str]:
         return title, desc, ""
 
     for sel in (
-        "nav", "header", "footer", "aside",
-        ".pagination-nav", ".theme-doc-sidebar-container",
-        ".theme-doc-footer", ".theme-doc-toc-mobile",
-        ".breadcrumbs", ".table-of-contents", "script", "style",
+        "nav",
+        "header",
+        "footer",
+        "aside",
+        ".pagination-nav",
+        ".theme-doc-sidebar-container",
+        ".theme-doc-footer",
+        ".theme-doc-toc-mobile",
+        ".breadcrumbs",
+        ".table-of-contents",
+        "script",
+        "style",
     ):
         for tag in el.select(sel):
             tag.decompose()
@@ -148,11 +218,128 @@ def _extract_html(html: str, page_url: str) -> tuple[str, str, str]:
     return title, desc, content.strip()
 
 
+def _site_title_from(html: str, fallback: str = "Docusaurus Docs") -> str:
+    tag = BeautifulSoup(html, "html.parser").find("title")
+    return tag.get_text(strip=True) if tag else fallback
+
+
 # ---------------------------------------------------------------------------
-# SPA chunk extraction
+# The index
 # ---------------------------------------------------------------------------
-def _parse_runtime_chunks(
-    homepage_html: str,
+
+
+@dataclass
+class Doc:
+    """One page as it is held in memory, body included."""
+
+    id: str
+    title: str
+    url: str
+    path: str
+    category: str
+    description: str = ""
+    content: str = ""
+    full_id: str = ""
+
+    def summary(self) -> DocSummary:
+        return DocSummary(
+            id=self.id,
+            title=self.title,
+            url=self.url,
+            path=self.path,
+            category=self.category,
+            description=self.description,
+        )
+
+
+@dataclass
+class DocIndex:
+    """Everything the tools read: the pages plus the lookups over them."""
+
+    site_title: str
+    spa_mode: bool = False
+    docs: list[Doc] = field(default_factory=list)
+    categories: dict[str, list[Doc]] = field(default_factory=dict)
+    by_id: dict[str, Doc] = field(default_factory=dict)
+    by_url: dict[str, Doc] = field(default_factory=dict)
+    by_path: dict[str, Doc] = field(default_factory=dict)
+
+    def reindex(self) -> None:
+        self.categories = {}
+        self.by_id = {}
+        self.by_url = {}
+        self.by_path = {}
+        for doc in self.docs:
+            self.categories.setdefault(doc.category.lower(), []).append(doc)
+            self.by_id[doc.id] = doc
+            if doc.full_id:
+                self.by_id[doc.full_id] = doc
+            self.by_url[doc.url] = doc
+            self.by_path[doc.path] = doc
+
+    def find(self, ref: str) -> Doc | None:
+        doc = self.by_id.get(ref) or self.by_url.get(ref) or self.by_path.get(ref)
+        if doc:
+            return doc
+        ref_lower = ref.lower()
+        for d in self.docs:
+            if (
+                d.id.lower() == ref_lower
+                or ref_lower in d.url.lower()
+                or ref_lower in d.path.lower()
+            ):
+                return d
+        return None
+
+    def category_models(self, only: str = "", with_docs: bool = True) -> list[Category]:
+        names = [only.lower()] if only else sorted(self.categories)
+        out: list[Category] = []
+        for name in names:
+            docs = self.categories.get(name)
+            if docs is None:
+                continue
+            out.append(
+                Category(
+                    name=name,
+                    page_count=len(docs),
+                    docs=[d.summary() for d in sorted(docs, key=lambda d: d.title)]
+                    if with_docs
+                    else [],
+                )
+            )
+        return out
+
+
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
+async def _noop_progress(done: int, total: int, message: str) -> None:
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Crawling
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_sitemap(client: httpx2.AsyncClient) -> list[str]:
+    """Fetch sitemap.xml and return normalized URLs."""
+    resp = await client.get(f"{SITE_URL}/sitemap.xml")
+    resp.raise_for_status()
+    root = ET.fromstring(resp.text)
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    sp = urlparse(SITE_URL)
+    urls: list[str] = []
+    for loc in root.findall(".//s:loc", ns):
+        raw = (loc.text or "").strip()
+        if raw:
+            p = urlparse(raw)
+            urls.append(raw.replace(f"{p.scheme}://{p.netloc}", f"{sp.scheme}://{sp.netloc}"))
+    return urls
+
+
+async def _parse_runtime_chunks(
+    client: httpx2.AsyncClient, homepage_html: str
 ) -> dict[str, tuple[str, str]]:
     """Parse runtime.js → {chunk_id: (name_hash, content_hash)}.
 
@@ -168,13 +355,11 @@ def _parse_runtime_chunks(
     if not runtime_url:
         return {}
 
-    rt = _client.get(runtime_url).text
+    rt = (await client.get(runtime_url)).text
 
     # Name hash map (first object in t.u)
     name_map: dict[str, str] = {}
-    nm = re.search(
-        r'"assets/js/"\s*\+\s*\(?\{([^}]+)\}\s*\[e\]\s*\|\|\s*e\)?', rt
-    )
+    nm = re.search(r'"assets/js/"\s*\+\s*\(?\{([^}]+)\}\s*\[e\]\s*\|\|\s*e\)?', rt)
     if nm:
         name_map = dict(re.findall(r'(\d+):"([^"]+)"', nm.group(1)))
 
@@ -183,23 +368,20 @@ def _parse_runtime_chunks(
     if not hm:
         return {}
 
-    chunks: dict[str, tuple[str, str]] = {}
-    for cid, chash in re.findall(r'(\d+):"([^"]+)"', hm.group(1)):
-        chunks[cid] = (name_map.get(cid, cid), chash)
+    return {
+        cid: (name_map.get(cid, cid), chash)
+        for cid, chash in re.findall(r'(\d+):"([^"]+)"', hm.group(1))
+    }
 
-    return chunks
 
-
-def _fetch_chunk(
-    chunk_id: str, name_hash: str, content_hash: str
-) -> dict | None:
-    """Fetch a webpack chunk and extract doc metadata + content.
-    Returns a doc dict or None if not a doc chunk.
-    """
+async def _fetch_chunk(
+    client: httpx2.AsyncClient, name_hash: str, content_hash: str
+) -> Doc | None:
+    """Fetch a webpack chunk and extract doc metadata + content, or None if not a doc."""
     url = f"{SITE_URL}/assets/js/{name_hash}.{content_hash}.js"
     try:
-        text = _client.get(url).text
-    except httpx.HTTPError:
+        text = (await client.get(url)).text
+    except httpx2.HTTPError:
         return None
 
     # Metadata lives in JSON.parse('{...}')
@@ -229,11 +411,12 @@ def _fetch_chunk(
             parts.append(s)
 
     # TOC for section structure
-    toc: list[tuple[int, str]] = []
-    for val, level in re.findall(
-        r'\{value:"((?:[^"\\]|\\.)*)",id:"[^"]*",level:(\d+)\}', text
-    ):
-        toc.append((int(level), _unescape_js(val)))
+    toc: list[tuple[int, str]] = [
+        (int(level), _unescape_js(val))
+        for val, level in re.findall(
+            r'\{value:"((?:[^"\\]|\\.)*)",id:"[^"]*",level:(\d+)\}', text
+        )
+    ]
 
     # Build readable markdown
     lines: list[str] = []
@@ -254,8 +437,6 @@ def _fetch_chunk(
         if current:
             lines.append(" ".join(current))
 
-    content = "\n".join(lines).strip()
-
     # Category from permalink
     pparts = permalink.strip("/").split("/") if permalink else []
     category = pparts[0] if len(pparts) > 1 else "_root"
@@ -265,80 +446,23 @@ def _fetch_chunk(
     if not short_id and pparts:
         short_id = pparts[-1]
 
-    return {
-        "id": short_id,
-        "full_id": meta_id,
-        "title": title,
-        "url": f"{SITE_URL}{permalink}" if permalink else "",
-        "path": permalink.strip("/"),
-        "category": category,
-        "content": content,
-        "description": description,
-    }
+    return Doc(
+        id=short_id,
+        full_id=meta_id,
+        title=title,
+        url=f"{SITE_URL}{permalink}" if permalink else "",
+        path=permalink.strip("/"),
+        category=category,
+        content="\n".join(lines).strip(),
+        description=description,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-print(f"Başlatılıyor: {SITE_URL}", file=sys.stderr)
-
-# 1. Homepage
-try:
-    _homepage_html = _client.get(SITE_URL).text
-except httpx.HTTPError as e:
-    print(f"HATA: Ana sayfa alınamadı: {e}", file=sys.stderr)
-    sys.exit(1)
-
-_site_title = "Docusaurus Docs"
-_soup = BeautifulSoup(_homepage_html, "html.parser")
-if _title_tag := _soup.find("title"):
-    _site_title = _title_tag.get_text(strip=True)
-
-# 2. Sitemap
-print("Sitemap alınıyor...", file=sys.stderr)
-try:
-    _sitemap_urls = _fetch_sitemap()
-except Exception as e:
-    print(f"Sitemap alınamadı: {e}", file=sys.stderr)
-    _sitemap_urls = []
-
-# 3. SPA detection: fetch one doc page, compare with homepage
-_spa_mode = False
-_test_urls = [u for u in _sitemap_urls if _relpath(u)]
-if _test_urls:
-    try:
-        _spa_mode = _client.get(_test_urls[0]).text == _homepage_html
-    except httpx.HTTPError:
-        pass
-
-# 4. Load content
-_all_docs: list[dict] = []
-
-if _spa_mode:
-    # --- SPA mode: parse webpack chunks ---
-    print("SPA modu algılandı, chunk'lar parse ediliyor...", file=sys.stderr)
-    _chunk_info = _parse_runtime_chunks(_homepage_html)
-    print(f"  {len(_chunk_info)} chunk bulundu", file=sys.stderr)
-
-    def _do_fetch(item):
-        cid, (nhash, chash) = item
-        return _fetch_chunk(cid, nhash, chash)
-
-    with ThreadPoolExecutor(max_workers=15) as pool:
-        futs = {pool.submit(_do_fetch, it): it for it in _chunk_info.items()}
-        for f in as_completed(futs):
-            try:
-                doc = f.result()
-                if doc:
-                    _all_docs.append(doc)
-            except Exception as exc:
-                print(f"  Chunk hatası: {exc}", file=sys.stderr)
-
-else:
-    # --- Standard mode: scrape HTML pages ---
-    print("Standart mod (statik HTML)", file=sys.stderr)
+def _skeleton_from_sitemap(urls: list[str]) -> list[Doc]:
+    """Turn sitemap URLs into empty Docs, skipping the non-documentation sections."""
     skip = {"blog", "tags", "search", "page", "markdown-page"}
-    for url in _sitemap_urls:
+    docs: list[Doc] = []
+    for url in urls:
         rel = _relpath(url)
         if not rel:
             continue
@@ -351,209 +475,321 @@ else:
             cat, did = parts[0], parts[-1]
         else:
             cat, did = "_root", parts[0]
-        _all_docs.append({
-            "id": did, "title": did.replace("-", " ").title(),
-            "url": url, "path": rel, "category": cat,
-            "content": None, "description": "",
-        })
+        docs.append(
+            Doc(id=did, title=did.replace("-", " ").title(), url=url, path=rel, category=cat)
+        )
+    return docs
 
-    def _scrape(doc):
+
+async def _fill_from_html(client: httpx2.AsyncClient, doc: Doc) -> None:
+    """Scrape a static page into an existing skeleton Doc."""
+    try:
+        html = (await client.get(doc.url)).text
+        title, desc, content = _extract_html(html, doc.url)
+        if title:
+            doc.title = title
+        if desc:
+            doc.description = desc
+        doc.content = content
+    except Exception as exc:
+        logger.warning("Sayfa yüklenemedi %s: %s", doc.url, exc)
+        doc.content = ""
+
+
+async def _run_bounded(jobs: list[Callable[[], Awaitable[None]]], on_done: ProgressCallback) -> None:
+    """Run `jobs` with a concurrency cap, reporting progress as each finishes."""
+    limiter = anyio.CapacityLimiter(MAX_CONCURRENT_FETCHES)
+    done = 0
+    total = len(jobs)
+
+    async def run(job: Callable[[], Awaitable[None]]) -> None:
+        nonlocal done
+        async with limiter:
+            await job()
+        done += 1
+        await on_done(done, total, f"{done}/{total} sayfa")
+
+    async with anyio.create_task_group() as tg:
+        for job in jobs:
+            tg.start_soon(run, job)
+
+
+async def build_index(
+    client: httpx2.AsyncClient, progress: ProgressCallback = _noop_progress
+) -> DocIndex:
+    """Crawl the site once and return a fresh index.
+
+    Cancelling the surrounding scope (a client cancelling the tool call, or the
+    server shutting down) cancels every in-flight fetch with it.
+    """
+    homepage_html = (await client.get(SITE_URL)).text
+    index = DocIndex(site_title=_site_title_from(homepage_html))
+
+    await progress(0, 1, "Sitemap alınıyor")
+    try:
+        sitemap_urls = await _fetch_sitemap(client)
+    except Exception as exc:
+        logger.warning("Sitemap alınamadı: %s", exc)
+        sitemap_urls = []
+
+    # SPA detection: a doc page that comes back byte-identical to the homepage
+    # means the server is not rendering per-page HTML.
+    test_urls = [u for u in sitemap_urls if _relpath(u)]
+    if test_urls:
         try:
-            html = _client.get(doc["url"]).text
-            title, desc, content = _extract_html(html, doc["url"])
-            if title:
-                doc["title"] = title
-            if desc:
-                doc["description"] = desc
-            doc["content"] = content
-        except Exception:
-            doc["content"] = ""
+            index.spa_mode = (await client.get(test_urls[0])).text == homepage_html
+        except httpx2.HTTPError:
+            pass
 
-    if _all_docs:
-        print(f"  {len(_all_docs)} sayfa yükleniyor...", file=sys.stderr)
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            list(pool.map(_scrape, _all_docs))
+    if index.spa_mode:
+        logger.info("SPA modu algılandı, chunk'lar parse ediliyor")
+        chunk_info = await _parse_runtime_chunks(client, homepage_html)
+        logger.info("%d chunk bulundu", len(chunk_info))
 
-# 5. Build indexes
-_categories = {}
-for d in _all_docs:
-    _categories.setdefault(d["category"].lower(), []).append(d)
+        async def fetch_one(name_hash: str, content_hash: str) -> None:
+            doc = await _fetch_chunk(client, name_hash, content_hash)
+            if doc:
+                index.docs.append(doc)
 
-_doc_count = len(_all_docs)
-_by_id: dict[str, dict] = {}
-_by_url: dict[str, dict] = {}
-_by_path: dict[str, dict] = {}
+        jobs = [
+            (lambda nh=nh, ch=ch: fetch_one(nh, ch)) for nh, ch in chunk_info.values()
+        ]
+        await _run_bounded(jobs, progress)
+    else:
+        logger.info("Standart mod (statik HTML)")
+        index.docs = _skeleton_from_sitemap(sitemap_urls)
+        logger.info("%d sayfa yükleniyor", len(index.docs))
+        jobs = [(lambda d=doc: _fill_from_html(client, d)) for doc in index.docs]
+        await _run_bounded(jobs, progress)
 
-for d in _all_docs:
-    _by_id[d["id"]] = d
-    if d.get("full_id"):
-        _by_id[d["full_id"]] = d
-    _by_url[d["url"]] = d
-    _by_path[d["path"]] = d
+    index.reindex()
+    logger.info("Hazır: %s — %d döküman", index.site_title, len(index.docs))
+    return index
 
-print(f"Hazır: {_site_title} — {_doc_count} döküman", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
-# MCP Server & Tools
+# Server
 # ---------------------------------------------------------------------------
-mcp = FastMCP("docusaurus-docs")
-_base_desc = f"{_site_title} döküman sitesinde"
-_desc_suffix = f"\n{EXTRA_DESCRIPTION}" if EXTRA_DESCRIPTION else ""
+
+
+@dataclass
+class AppContext:
+    client: httpx2.AsyncClient
+    index: DocIndex
+
+
+# Resources reach the app state through this module-level handle: a resource
+# handler's Context carries no request context, so it cannot read the lifespan
+# object the way a tool does.
+_app: AppContext | None = None
+
+
+@asynccontextmanager
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
+    """Crawl the site once at startup; the tools serve from the result."""
+    global _app
+    async with _new_client() as client:
+        try:
+            index = await build_index(client)
+        except httpx2.HTTPError as exc:
+            logger.error("Site indekslenemedi (%s): %s", SITE_URL, exc)
+            index = DocIndex(site_title=SITE_URL)
+        _app = AppContext(client=client, index=index)
+        try:
+            yield _app
+        finally:
+            _app = None
+
+
+mcp = MCPServer("docusaurus-docs", version=__version__, lifespan=app_lifespan)
+
+_DESC_SUFFIX = f"\n{EXTRA_DESCRIPTION}" if EXTRA_DESCRIPTION else ""
+_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+
+
+def _index(ctx: Context[AppContext]) -> DocIndex:
+    index = ctx.request_context.lifespan_context.index
+    if not index.docs:
+        raise ToolError(
+            f"{SITE_URL} indekslenemedi ya da hiç döküman bulunamadı. "
+            "refresh_index ile yeniden denenebilir."
+        )
+    return index
 
 
 @mcp.tool(
-    description=f"{_base_desc} tüm döküman yapısını (kategoriler ve sayfalar) gösterir.{_desc_suffix}"
+    title="Döküman yapısı",
+    description=f"Döküman sitesinin tüm yapısını (kategoriler ve sayfalar) gösterir.{_DESC_SUFFIX}",
+    annotations=_READ_ONLY,
 )
-def get_doc_structure() -> str:
-    """
-    Returns:
-        Döküman sitesinin kategori ağacı
-    """
-    lines = [f"{_site_title} ({_doc_count} döküman)", ""]
-    for cat in sorted(_categories.keys()):
-        if cat == "_root":
-            continue
-        docs = _categories[cat]
-        lines.append(f"📁 {cat} ({len(docs)} sayfa)")
-        for doc in sorted(docs, key=lambda d: d["title"]):
-            lines.append(f"  ├── {doc['title']}  [{doc['id']}]")
-        lines.append("")
-
-    root = _categories.get("_root", [])
-    if root:
-        lines.append(f"📄 Diğer ({len(root)} sayfa)")
-        for doc in sorted(root, key=lambda d: d["title"]):
-            lines.append(f"  ├── {doc['title']}  [{doc['id']}]")
-
-    return "\n".join(lines)
+def get_doc_structure(ctx: Context[AppContext]) -> DocStructure:
+    index = _index(ctx)
+    return DocStructure(
+        site_title=index.site_title,
+        site_url=SITE_URL,
+        doc_count=len(index.docs),
+        categories=index.category_models(),
+    )
 
 
 @mcp.tool(
-    description=f"{_base_desc} bir kategorideki sayfaları listeler.{_desc_suffix}"
+    title="Sayfaları listele",
+    description=f"Bir kategorideki sayfaları listeler.{_DESC_SUFFIX}",
+    annotations=_READ_ONLY,
 )
-def list_docs(category: str = "") -> str:
-    """
-    Args:
-        category: Kategori adı. Boş bırakılırsa tüm kategoriler özetlenir.
-    """
+def list_docs(
+    ctx: Context[AppContext],
+    category: Annotated[
+        str,
+        Field(description="Kategori adı. Boş bırakılırsa tüm kategoriler sayfasız özetlenir."),
+    ] = "",
+) -> CategoryListing:
+    index = _index(ctx)
+
     if not category:
-        lines = [f"{_site_title} — Kategoriler:", ""]
-        for cat in sorted(_categories.keys()):
-            if cat == "_root":
-                continue
-            lines.append(f"  📁 {cat} — {len(_categories[cat])} sayfa")
-        lines.append("")
-        lines.append("Detay için: list_docs(category='kategori_adı')")
-        return "\n".join(lines)
-
-    cat_key = category.lower()
-    docs = _categories.get(cat_key)
-    if not docs:
-        available = [c for c in _categories if c != "_root"]
-        return (
-            f"'{category}' bulunamadı. Mevcut: {', '.join(sorted(available))}"
+        return CategoryListing(
+            site_title=index.site_title,
+            category="",
+            categories=index.category_models(with_docs=False),
         )
 
-    lines = [f"📁 {category} ({len(docs)} sayfa)", ""]
-    for doc in sorted(docs, key=lambda d: d["title"]):
-        lines.append(f"  • {doc['title']}")
-        if doc["description"]:
-            lines.append(f"    {doc['description']}")
-        lines.append(f"    ID: {doc['id']}  |  {doc['url']}")
-        lines.append("")
-    return "\n".join(lines)
+    categories = index.category_models(only=category)
+    if not categories:
+        available = sorted(c for c in index.categories if c != "_root")
+        raise ToolError(f"'{category}' kategorisi yok. Mevcut olanlar: {', '.join(available)}")
+
+    return CategoryListing(site_title=index.site_title, category=category, categories=categories)
 
 
 @mcp.tool(
-    description=f"{_base_desc} anahtar kelime araması yapar. Başlık, açıklama ve içerik üzerinde arar.{_desc_suffix}"
+    title="Dökümanlarda ara",
+    description=f"Başlık, açıklama ve içerik üzerinde anahtar kelime araması yapar.{_DESC_SUFFIX}",
+    annotations=_READ_ONLY,
 )
-def search_docs(query: str, limit: int = 5) -> str:
-    """
-    Args:
-        query: Aranacak kelime veya ifade
-        limit: Maksimum sonuç sayısı (varsayılan: 5)
-    """
-    if not query.strip():
-        return "Lütfen bir arama terimi girin."
+def search_docs(
+    query: Annotated[str, Field(min_length=1, description="Aranacak kelime veya ifade.")],
+    ctx: Context[AppContext],
+    limit: Annotated[int, Field(ge=1, le=50, description="Maksimum sonuç sayısı.")] = 5,
+) -> SearchResults:
+    index = _index(ctx)
+    q = query.strip().lower()
+    if not q:
+        raise ToolError("Arama terimi boş olamaz.")
 
-    q = query.lower()
-    results: list[tuple[int, dict, str]] = []
-
-    for doc in _all_docs:
+    hits: list[SearchHit] = []
+    for doc in index.docs:
         score = 0
         snippet = ""
 
-        if q in doc["title"].lower():
+        if q in doc.title.lower():
             score += 10
-        if q in doc["description"].lower():
+        if q in doc.description.lower():
             score += 3
 
-        content = (doc["content"] or "").lower()
-        if q in content:
-            count = content.count(q)
-            score += min(count, 5)
-            idx = content.index(q)
+        content_lower = doc.content.lower()
+        if q in content_lower:
+            score += min(content_lower.count(q), 5)
+            idx = content_lower.index(q)
             start = max(0, idx - 100)
-            end = min(len(content), idx + len(query) + 200)
-            raw = (doc["content"] or "")[start:end].replace("\n", " ").strip()
-            snippet = ("..." if start > 0 else "") + raw + (
-                "..." if end < len(content) else ""
-            )
+            end = min(len(doc.content), idx + len(q) + 200)
+            raw = doc.content[start:end].replace("\n", " ").strip()
+            snippet = ("..." if start > 0 else "") + raw + ("..." if end < len(doc.content) else "")
 
         if score > 0:
-            results.append((score, doc, snippet))
+            hits.append(SearchHit(score=score, doc=doc.summary(), snippet=snippet))
 
-    results.sort(key=lambda x: x[0], reverse=True)
-    results = results[:limit]
-
-    if not results:
-        return f"'{query}' için sonuç bulunamadı."
-
-    lines = [f"🔍 '{query}' — {len(results)} sonuç:", ""]
-    for _, doc, snippet in results:
-        lines.append(f"  📄 {doc['title']}")
-        lines.append(f"     {doc['url']}")
-        if snippet:
-            lines.append(f"     {snippet}")
-        lines.append("")
-    return "\n".join(lines)
+    hits.sort(key=lambda h: h.score, reverse=True)
+    return SearchResults(query=query, total_matching=len(hits), hits=hits[:limit])
 
 
 @mcp.tool(
-    description=f"{_base_desc} bir dökümanın tam içeriğini markdown olarak döner. ID veya URL ile erişilir.{_desc_suffix}"
+    title="Dökümanı getir",
+    description=f"Bir dökümanın tam içeriğini markdown olarak döner. ID, path veya URL ile.{_DESC_SUFFIX}",
+    annotations=_READ_ONLY,
 )
-def fetch_doc(doc_ref: str) -> str:
-    """
-    Args:
-        doc_ref: Döküman ID'si (ör. 'yeni-izin-talebi'), URL'i veya path'i
-    """
-    doc = _by_id.get(doc_ref) or _by_url.get(doc_ref) or _by_path.get(doc_ref)
-
+def fetch_doc(
+    doc_ref: Annotated[
+        str,
+        Field(description="Döküman ID'si (ör. 'yeni-izin-talebi'), site içi path'i veya tam URL'i."),
+    ],
+    ctx: Context[AppContext],
+) -> DocContent:
+    index = _index(ctx)
+    doc = index.find(doc_ref)
     if not doc:
-        ref_lower = doc_ref.lower()
-        for d in _all_docs:
-            if (
-                d["id"].lower() == ref_lower
-                or ref_lower in d["url"].lower()
-                or ref_lower in d["path"].lower()
-            ):
-                doc = d
-                break
-
-    if not doc:
-        return (
-            f"Döküman bulunamadı: '{doc_ref}'\n"
-            "Mevcut ID'ler için get_doc_structure() kullanın."
+        raise ToolError(
+            f"Döküman bulunamadı: '{doc_ref}'. Mevcut ID'ler için get_doc_structure kullan."
         )
+    return DocContent(
+        id=doc.id,
+        title=doc.title,
+        url=doc.url,
+        path=doc.path,
+        category=doc.category,
+        description=doc.description,
+        content=doc.content or "(İçerik yüklenemedi)",
+    )
 
-    header = f"# {doc['title']}\n\n"
-    if doc["url"]:
-        header += f"**URL:** {doc['url']}\n"
-    if doc["description"]:
-        header += f"**Açıklama:** {doc['description']}\n"
-    header += f"**Kategori:** {doc['category']}\n\n---\n\n"
 
-    return header + (doc["content"] or "(İçerik yüklenemedi)")
+@mcp.tool(
+    title="İndeksi yenile",
+    description="Siteyi baştan tarayıp indeksi tazeler. Dökümanlar güncellendiyse kullan."
+    + _DESC_SUFFIX,
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
+    ),
+)
+async def refresh_index(ctx: Context[AppContext]) -> IndexStatus:
+    app = ctx.request_context.lifespan_context
+
+    async def report(done: int, total: int, message: str) -> None:
+        await ctx.report_progress(done, total, message)
+
+    try:
+        app.index = await build_index(app.client, progress=report)
+    except httpx2.HTTPError as exc:
+        raise ToolError(f"{SITE_URL} taranamadı: {exc}") from exc
+
+    return IndexStatus(
+        site_title=app.index.site_title,
+        site_url=SITE_URL,
+        doc_count=len(app.index.docs),
+        spa_mode=app.index.spa_mode,
+    )
+
+
+@mcp.resource(
+    "docs://{doc_ref}",
+    name="Döküman sayfası",
+    description="Bir döküman sayfasının markdown içeriği. doc_ref: ID, path veya URL.",
+    mime_type="text/markdown",
+)
+def doc_resource(doc_ref: str) -> str:
+    if _app is None:
+        raise ResourceError("Sunucu henüz hazır değil.")
+    doc = _app.index.find(doc_ref)
+    if not doc:
+        raise ResourceError(f"Döküman bulunamadı: '{doc_ref}'")
+
+    header = f"# {doc.title}\n\n"
+    if doc.url:
+        header += f"**URL:** {doc.url}\n"
+    if doc.description:
+        header += f"**Açıklama:** {doc.description}\n"
+    header += f"**Kategori:** {doc.category}\n\n---\n\n"
+    return header + (doc.content or "(İçerik yüklenemedi)")
+
+
+@mcp.prompt(title="Konuyu dökümanlardan açıkla")
+def explain_topic(topic: str) -> str:
+    """Explain a topic using only what the documentation site says about it."""
+    return (
+        f"'{topic}' konusunu bu döküman sitesindeki bilgilere dayanarak açıkla.\n\n"
+        f"1. `search_docs` ile '{topic}' ara.\n"
+        "2. En alakalı sayfaları `fetch_doc` ile tam olarak oku.\n"
+        "3. Yalnızca dökümanlarda yazana dayanarak açıkla; eksik kalan noktaları eksik olarak belirt.\n"
+        "4. Her iddianın yanına kaynak sayfanın başlığını ve URL'sini koy."
+    )
 
 
 if __name__ == "__main__":

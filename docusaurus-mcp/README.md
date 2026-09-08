@@ -1,7 +1,7 @@
 # Docusaurus MCP Server
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Generic MCP server for any [Docusaurus](https://docusaurus.io) documentation site. Point it at a URL and get full-text search, browsing, and content extraction — works with both static HTML and SPA-only builds.
@@ -13,6 +13,10 @@ Generic MCP server for any [Docusaurus](https://docusaurus.io) documentation sit
 - **Category Browsing** — Navigate the doc structure by categories
 - **Markdown Extraction** — Returns clean markdown from any doc page
 - **Sitemap Support** — Automatically discovers all pages via sitemap.xml
+- **Structured Output** — Every tool returns typed JSON (`DocSummary`, `SearchHit`, `DocContent`)
+- **Live Refresh** — `refresh_index` re-crawls the site and reports progress while it works
+- **Doc Resource** — `docs://{doc_ref}` reads any page directly, no tool call needed
+- **Prompt** — `explain_topic` walks the model through answering from the docs with citations
 
 ## Quick Start
 
@@ -209,6 +213,29 @@ Returns the full content of a document as clean markdown.
 
 </details>
 
+<details>
+<summary><code>refresh_index</code> — Re-crawl the site</summary>
+
+Crawls the site again and replaces the in-memory index. Use it after the documentation
+has been updated. Reports progress per page while crawling, and can be cancelled by the
+client — cancelling stops the in-flight fetches.
+
+No parameters required.
+
+</details>
+
+## Resources
+
+| URI | Description |
+|-----|-------------|
+| `docs://{doc_ref}` | A page's markdown, addressed by ID, path, or URL |
+
+## Prompts
+
+| Name | Description |
+|------|-------------|
+| `explain_topic` | Search the docs for a topic, read the relevant pages, and answer with citations |
+
 ## How It Works
 
 1. **Startup**: Fetches the homepage and sitemap.xml
@@ -216,6 +243,10 @@ Returns the full content of a document as clean markdown.
 3. **Static Mode**: Scrapes each page's HTML and extracts article content via BeautifulSoup + markdownify
 4. **SPA Mode**: Parses `runtime.js` to find webpack chunk URLs, fetches each chunk, and extracts doc metadata + content from `JSON.parse()` calls and JSX children
 5. **Indexing**: Builds in-memory indexes by ID, URL, path, and category for fast lookups
+
+Crawling runs in the server's lifespan, not at import, and fetches pages concurrently
+with an async HTTP client (10 at a time). A failed crawl leaves the server running with
+an empty index; the tools then say so and point at `refresh_index`.
 
 ## Usage Examples
 
@@ -232,6 +263,11 @@ Show me the "getting-started" page content
 # Category browsing
 List all pages in the "guides" category
 ```
+
+## Requirements
+
+Python 3.10+ and MCP SDK 2.x (`mcp>=2.2,<3`). The server speaks the 2026-07-28 protocol
+revision and still serves older MCP clients from the same process.
 
 ## License
 
