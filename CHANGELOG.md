@@ -57,6 +57,13 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **n8n-chatbot-mcp**: TLS certificate verification is on by default. It was disabled
+  unconditionally (`verify=False`), which silently accepted any certificate. An n8n behind
+  a self-signed certificate now needs `N8N_CHATBOT_VERIFY_TLS=false`, and the error names
+  that flag so the fix is obvious.
+- **agent-chat**: the read-modify-write of a room file happens under one exclusive lock and
+  no longer truncates before locking, so concurrent agents cannot lose a message or derive
+  the same next id from the same snapshot.
 
 ### Verified
 
@@ -69,7 +76,9 @@ verified over stdio.
 
 - The published PyPI/npm packages are still at 1.0.0; a `uvx`/`npx` install keeps getting
   the old, now-broken code until 2.0.0 is published.
-- **agent-chat**: `_write_json` truncates the file before taking its lock, and message IDs
-  come from `len(messages) + 1`. Concurrent writers to one room can still lose a message
-  or collide on an ID. Fixing that means writing to a temp file and `os.replace`-ing it
-  under a separate lock file — a change in its own right, not part of this migration.
+- **ssh-mcp-server**: `ssh_activity_logger.py` sits next to the package rather than inside
+  it, and `[tool.setuptools] packages` only ships `mcp_server_ssh`. In a published install
+  the import fails and the optional-logger shim silently disables activity logging. Moving
+  the module into the package would turn logging on for everyone by default — it writes a
+  SQLite database of every command run — so where those logs live and whether they should
+  be on is a decision of its own, not a migration fix.

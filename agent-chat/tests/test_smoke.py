@@ -153,3 +153,62 @@ def test_unknown_room_history_fails(mcp_server):
                 await client.read_resource("chat://rooms/yok-boyle/messages")
 
     anyio.run(run)
+
+
+def _append_from_worker(chat_dir: str, agent: str, count: int) -> None:
+    """Append messages from a separate process, using its own ChatStore."""
+    import importlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    os.environ["AGENT_CHAT_DIR"] = chat_dir
+    os.environ["AGENT_CHAT_ROOM"] = "default"
+    for module in [m for m in _sys.modules if m.startswith("agent_chat_mcp")]:
+        del _sys.modules[module]
+    module = importlib.import_module("agent_chat_mcp.server")
+
+    store = module.ChatStore(Path(chat_dir), "default")
+    for index in range(count):
+        store.append_message(
+            "default",
+            **{
+                "from": agent,
+                "to": "all",
+                "content": f"{agent}-{index}",
+                "type": "broadcast",
+            },
+        )
+
+
+def test_concurrent_writers_lose_nothing(tmp_path):
+    """Two processes appending at once must not drop messages or reuse an id.
+
+    The read-modify-write happens under one exclusive lock, and the file is
+    never truncated before that lock is held.
+    """
+    import multiprocessing
+
+    per_worker = 25
+    agents = ["backend", "frontend", "mobile"]
+
+    context = multiprocessing.get_context("spawn")
+    workers = [
+        context.Process(target=_append_from_worker, args=(str(tmp_path), agent, per_worker))
+        for agent in agents
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=60)
+        assert worker.exitcode == 0
+
+    messages = json.loads((tmp_path / "default" / "messages.json").read_text())
+    assert len(messages) == per_worker * len(agents)
+
+    ids = [m["id"] for m in messages]
+    assert len(set(ids)) == len(ids), "message ids must be unique"
+    assert sorted(ids) == list(range(1, len(ids) + 1))
+
+    for agent in agents:
+        sent = {m["content"] for m in messages if m["from"] == agent}
+        assert sent == {f"{agent}-{i}" for i in range(per_worker)}

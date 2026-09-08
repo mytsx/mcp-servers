@@ -100,10 +100,11 @@ Sıralama küçükten büyüğe; ilk sunucu diğerlerinde tekrar edilecek konvan
 - [x] `leave_room` odada olmayan agent için `ToolError`
 - [x] Annotation'lar; `last_seen` yazan tool'lar dürüstçe `read_only_hint=False`
 
-**Bilinen sorun (bu migrasyonun kapsamı dışı, ayrı iş):** `_write_json` dosyayı `open(..., "w")`
-ile açıp *sonra* `flock` alıyor — truncate kilitten önce oluyor. Aynı odaya eşzamanlı iki yazıcı
-mesaj kaybedebilir. Mesaj ID'si de `len(messages)+1` ile üretiliyor, yani yarış durumunda ID
-çakışabilir. Düzeltme: geçici dosyaya yazıp `os.replace` ile atomik taşıma + ayrı kilit dosyası.
+- [x] **Eşzamanlı yazma yarışı düzeltildi** (code review bulgusu): oda dosyasının
+      read-modify-write'ı tek bir exclusive kilit altında yapılıyor ve dosya kilit
+      alınmadan truncate edilmiyor. Mesaj ID'si de aynı kilit içinde türetiliyor.
+      `test_concurrent_writers_lose_nothing` üç süreçle 75 mesaj yazıp hiçbirinin
+      kaybolmadığını ve ID'lerin benzersiz olduğunu doğruluyor; eski kodda düşüyor.
 
 ### 3. docusaurus-mcp (560 satır, FastMCP, 4 tool) ✅
 - [x] A + B ortak maddeleri

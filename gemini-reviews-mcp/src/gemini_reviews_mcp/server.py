@@ -120,27 +120,31 @@ class GitHub:
         self.token = token
 
     async def _paginate(self, path: str) -> list[dict[str, Any]]:
-        """Read every page of a GitHub list endpoint."""
+        """Read every page of a GitHub list endpoint.
+
+        Any non-200 fails the call. Stopping early and returning what was
+        collected so far would hand back a partial history as if it were
+        complete, and a missing finding reads exactly like no finding.
+        """
         items: list[dict[str, Any]] = []
         page = 1
         while True:
-            resp = await self.client.get(
-                f"{GITHUB_API}{path}", params={"page": page, "per_page": 100}
-            )
+            try:
+                resp = await self.client.get(
+                    f"{GITHUB_API}{path}", params={"page": page, "per_page": 100}
+                )
+            except httpx2.HTTPError as exc:
+                raise ToolError(f"GitHub {path} isteği başarısız: {exc}") from exc
+
             if resp.status_code != 200:
-                logger.warning("GitHub %s → HTTP %s", path, resp.status_code)
-                if resp.status_code in (401, 403):
-                    raise ToolError(
-                        f"GitHub {path} isteği HTTP {resp.status_code} döndü. "
-                        "Token eksik ya da bu depoya erişimi yok."
-                    )
-                break
+                logger.warning("GitHub %s → HTTP %s (sayfa %s)", path, resp.status_code, page)
+                raise ToolError(_github_error(path, resp.status_code, page))
+
             batch = resp.json()
             if not batch:
-                break
+                return items
             items.extend(batch)
             page += 1
-        return items
 
     async def authenticated_user(self) -> str | None:
         try:
@@ -187,6 +191,17 @@ class GitHub:
 
     async def issue_comments(self, repo: str, pr: int) -> list[dict]:
         return await self._paginate(f"/repos/{repo}/issues/{pr}/comments")
+
+
+def _github_error(path: str, status: int, page: int) -> str:
+    """A message that says what to do about this particular status."""
+    hint = {
+        401: "Token geçersiz ya da süresi dolmuş.",
+        403: "Token'ın bu depoya erişimi yok ya da rate limit aşıldı.",
+        404: "Depo ya da PR bulunamadı; adı ve numarayı kontrol et.",
+    }.get(status, "GitHub bu isteği reddetti.")
+    where = f" (sayfa {page})" if page > 1 else ""
+    return f"GitHub {path} isteği HTTP {status} döndü{where}. {hint}"
 
 
 def _parse_ts(value: str) -> datetime:

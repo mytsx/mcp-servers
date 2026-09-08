@@ -12,9 +12,10 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeVar
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context, Elicit, Resolve
@@ -25,6 +26,8 @@ from pydantic import BaseModel, Field
 from . import __version__
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 # Chat data directory - shared between all instances
 CHAT_DIR = Path(os.environ.get("AGENT_CHAT_DIR", "/tmp/agent-chat-room"))
@@ -138,27 +141,74 @@ class ChatStore:
         return room_dir
 
     @staticmethod
-    def _read_json(filepath: Path, default: dict | list) -> dict | list:
-        """Thread-safe JSON file reading."""
+    def _decode(content: str, default: dict | list, filepath: Path) -> dict | list:
+        try:
+            return json.loads(content) if content.strip() else default
+        except json.JSONDecodeError:
+            logger.warning("Bozuk JSON, varsayılana dönülüyor: %s", filepath)
+            return default
+
+    @classmethod
+    def _read_json(cls, filepath: Path, default: dict | list) -> dict | list:
+        """Read under a shared lock, so a concurrent write is never half-seen."""
         if not filepath.exists():
             return default
         try:
             with open(filepath) as f:
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
-                content = f.read()
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-                return json.loads(content) if content else default
-        except (json.JSONDecodeError, OSError):
-            logger.warning("Bozuk veya okunamayan dosya, varsayılana dönülüyor: %s", filepath)
+                try:
+                    content = f.read()
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            logger.warning("Dosya okunamadı, varsayılana dönülüyor: %s", filepath)
             return default
+        return cls._decode(content, default, filepath)
 
-    @staticmethod
-    def _write_json(filepath: Path, data: dict | list) -> None:
-        """Thread-safe JSON file writing."""
-        with open(filepath, "w") as f:
+    @classmethod
+    def _update_json(
+        cls,
+        filepath: Path,
+        default: dict | list,
+        mutate: Callable[[dict | list], _T],
+    ) -> _T:
+        """Read, mutate and write back while holding one exclusive lock.
+
+        Opening with "w" would truncate the file *before* the lock is taken, so
+        a second writer could wipe what the first one is still writing. The file
+        is opened without truncating, locked, and only then rewritten — and the
+        whole read-modify-write happens inside that lock, so two agents cannot
+        derive the same next message id from the same snapshot.
+        """
+        # "a+" creates the file if needed and never truncates.
+        with open(filepath, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            try:
+                f.seek(0)
+                data = cls._decode(f.read(), default, filepath)
+                result = mutate(data)
+                f.seek(0)
+                f.truncate()
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+                return result
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    @classmethod
+    def _write_json(cls, filepath: Path, data: dict | list) -> None:
+        """Replace a file's contents wholesale, under an exclusive lock."""
+
+        def replace(current: dict | list) -> None:
+            if isinstance(current, dict):
+                current.clear()
+                current.update(data)  # type: ignore[arg-type]
+            else:
+                current.clear()
+                current.extend(data)  # type: ignore[arg-type]
+
+        cls._update_json(filepath, type(data)(), replace)
 
     def agents(self, room: str) -> dict[str, dict]:
         raw = self._read_json(self.room_dir(room) / "agents.json", {})
@@ -184,11 +234,18 @@ class ChatStore:
             self.save_agents(agents, room)
 
     def append_message(self, room: str, **fields) -> dict:
-        messages = self.messages(room)
-        message = {"id": len(messages) + 1, "timestamp": datetime.now().isoformat(), **fields}
-        messages.append(message)
-        self.save_messages(messages, room)
-        return message
+        """Append one message, deriving its id under the same lock as the write."""
+
+        def add(messages: list) -> dict:
+            message = {
+                "id": messages[-1]["id"] + 1 if messages else 1,
+                "timestamp": datetime.now().isoformat(),
+                **fields,
+            }
+            messages.append(message)
+            return message
+
+        return self._update_json(self.room_dir(room) / "messages.json", [], add)
 
     def live_agents(self, room: str) -> dict[str, dict]:
         """Agents seen recently enough to count as present, persisting the cleanup."""

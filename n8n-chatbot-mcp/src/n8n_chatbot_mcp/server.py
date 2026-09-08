@@ -10,12 +10,16 @@ Environment variables:
     N8N_CHATBOT_URL         (required) Full webhook URL, e.g. https://n8n.example.com/webhook/my-bot/chat
     N8N_CHATBOT_DESCRIPTION (optional) Extra context appended to auto-discovered description
     N8N_CHATBOT_TIMEOUT     (optional) Request timeout in seconds (default: 120)
+    N8N_CHATBOT_VERIFY_TLS  (optional) "false" to skip TLS certificate verification
+                            (default: verify). Only for an n8n behind a self-signed
+                            certificate, and only on a network you trust.
 """
 
 import json
 import logging
 import os
 import re
+import ssl
 import sys
 import uuid
 from collections.abc import AsyncIterator
@@ -36,6 +40,19 @@ logger = logging.getLogger(__name__)
 
 CHATBOT_URL = os.environ.get("N8N_CHATBOT_URL", "")
 CHATBOT_TIMEOUT = int(os.environ.get("N8N_CHATBOT_TIMEOUT", "120"))
+
+# TLS verification is on unless it is explicitly turned off. An n8n instance
+# behind a self-signed certificate needs N8N_CHATBOT_VERIFY_TLS=false; nothing
+# else should.
+VERIFY_TLS = os.environ.get("N8N_CHATBOT_VERIFY_TLS", "true").strip().lower() not in (
+    "false",
+    "0",
+    "no",
+)
+if not VERIFY_TLS:
+    logger.warning(
+        "N8N_CHATBOT_VERIFY_TLS=false: TLS sertifikası doğrulanmayacak (%s)", CHATBOT_URL
+    )
 
 if not CHATBOT_URL:
     print(
@@ -65,7 +82,7 @@ def _discover_chat_config() -> ChatConfig:
     """GET the chat UI HTML and extract instance headers, name, description."""
     config = ChatConfig()
     try:
-        with httpx2.Client(timeout=15, verify=False) as client:
+        with httpx2.Client(timeout=15, verify=VERIFY_TLS) as client:
             resp = client.get(CHATBOT_URL)
             if resp.status_code != 200 or "text/html" not in resp.headers.get("content-type", ""):
                 return config
@@ -137,7 +154,7 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
     """Open one HTTP client for the whole server run."""
-    async with httpx2.AsyncClient(timeout=CHATBOT_TIMEOUT, verify=False) as http:
+    async with httpx2.AsyncClient(timeout=CHATBOT_TIMEOUT, verify=VERIFY_TLS) as http:
         yield AppContext(http=http, config=_chat_config)
 
 
@@ -198,11 +215,30 @@ async def ask_chatbot(
             f"Chatbot HTTP {exc.response.status_code} hatası döndü."
         ) from exc
     except httpx2.ConnectError as exc:
-        raise ToolError("Chatbot sunucusuna bağlanılamadı.") from exc
+        # httpx wraps a certificate failure in ConnectError, so the TLS case has
+        # to be picked out of the cause chain to be named properly.
+        if _is_tls_failure(exc):
+            raise ToolError(
+                f"Chatbot sunucusunun TLS sertifikası doğrulanamadı: {exc}. Sertifika kendinden "
+                "imzalıysa ve ağa güveniyorsan N8N_CHATBOT_VERIFY_TLS=false ayarla."
+            ) from exc
+        raise ToolError(f"Chatbot sunucusuna bağlanılamadı: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise ToolError("Chatbot geçerli JSON döndürmedi.") from exc
 
     return ChatReply(answer=_extract_answer(data), session_id=resolved_session)
+
+
+def _is_tls_failure(exc: BaseException) -> bool:
+    """Whether this connection error was really a certificate problem."""
+    seen = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ssl.SSLError):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _extract_answer(data: object) -> str:
@@ -234,6 +270,7 @@ def chat_config_resource() -> str:
             "initial_messages": _chat_config.initial_messages,
             "request_headers": sorted(_REQUEST_HEADERS),
             "timeout_seconds": CHATBOT_TIMEOUT,
+            "verify_tls": VERIFY_TLS,
         },
         ensure_ascii=False,
         indent=2,

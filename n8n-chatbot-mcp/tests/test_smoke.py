@@ -125,3 +125,85 @@ def test_unreachable_chatbot_is_a_tool_error():
             assert "bağlanılamadı" in result.content[0].text
 
     anyio.run(run)
+
+
+def _self_signed_cert(directory: Path) -> Path:
+    """Generate a throwaway certificate for 127.0.0.1, or skip if we cannot."""
+    import shutil
+    import subprocess
+
+    openssl = shutil.which("openssl")
+    if openssl is None:
+        pytest.skip("openssl bulunamadı; TLS testi atlandı")
+
+    pem = directory / "cert.pem"
+    result = subprocess.run(
+        [
+            openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(pem), "-out", str(pem), "-days", "1",
+            "-subj", "/CN=127.0.0.1",
+            "-addext", "subjectAltName=IP:127.0.0.1",
+        ],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"sertifika üretilemedi: {result.stderr.decode()[:200]}")
+    return pem
+
+
+@pytest.fixture()
+def self_signed_chatbot(tmp_path):
+    """An HTTPS chat endpoint whose certificate nothing trusts."""
+    import ssl as ssl_module
+
+    pem = _self_signed_cert(tmp_path)
+    context = ssl_module.SSLContext(ssl_module.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(pem)
+
+    server = HTTPServer(("127.0.0.1", 0), _StubHandler)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"https://127.0.0.1:{server.server_port}/webhook/test/chat"
+    finally:
+        server.shutdown()
+
+
+def _reload_with(url: str, verify: str | None):
+    os.environ["N8N_CHATBOT_URL"] = url
+    if verify is None:
+        os.environ.pop("N8N_CHATBOT_VERIFY_TLS", None)
+    else:
+        os.environ["N8N_CHATBOT_VERIFY_TLS"] = verify
+    for module in [m for m in sys.modules if m.startswith("n8n_chatbot_mcp")]:
+        del sys.modules[module]
+    import n8n_chatbot_mcp.server as module
+
+    return module
+
+
+def test_tls_is_verified_by_default(self_signed_chatbot):
+    """An untrusted certificate must fail, and the error must name the escape hatch."""
+    module = _reload_with(self_signed_chatbot, verify=None)
+    assert module.VERIFY_TLS is True
+
+    async def run():
+        async with Client(module.mcp) as client:
+            result = await client.call_tool("ask_chatbot", {"question": "merhaba"})
+            assert result.is_error is True
+            assert "N8N_CHATBOT_VERIFY_TLS=false" in result.content[0].text
+
+    anyio.run(run)
+
+
+def test_verification_can_be_turned_off_deliberately(self_signed_chatbot):
+    module = _reload_with(self_signed_chatbot, verify="false")
+    assert module.VERIFY_TLS is False
+
+    async def run():
+        async with Client(module.mcp) as client:
+            result = await client.call_tool("ask_chatbot", {"question": "merhaba"})
+            assert result.is_error is False
+            assert result.structured_content["answer"] == "cevap: merhaba"
+
+    anyio.run(run)

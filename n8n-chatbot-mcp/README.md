@@ -166,6 +166,11 @@ pip install -e .
 | `N8N_CHATBOT_URL` | Yes | — | Full n8n Chat Trigger webhook URL |
 | `N8N_CHATBOT_DESCRIPTION` | No | — | Extra context **appended** to auto-discovered description |
 | `N8N_CHATBOT_TIMEOUT` | No | `120` | Request timeout in seconds |
+| `N8N_CHATBOT_VERIFY_TLS` | No | `true` | Set to `false` only for an n8n behind a self-signed certificate |
+
+TLS certificate verification is **on by default**. If your n8n uses a self-signed
+certificate the tool fails with an error naming `N8N_CHATBOT_VERIFY_TLS`; set it to `false`
+only when you also trust the network between you and that host.
 
 ### Auto-Discovery
 
