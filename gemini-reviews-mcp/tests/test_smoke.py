@@ -76,6 +76,15 @@ class _StubGitHub(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         path, _, query = self.path.partition("?")
+
+        # /user needs credentials, as it does on real GitHub. Everything else
+        # here stands in for a public repository and answers either way.
+        if path == "/user" and not self.headers.get("Authorization"):
+            self.send_response(401)
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
+
         page = 1
         for part in query.split("&"):
             if part.startswith("page="):
@@ -150,13 +159,39 @@ def test_whole_history_when_the_cutoff_is_off(server_module):
     anyio.run(run)
 
 
-def test_missing_token_is_a_tool_error(server_module):
+def test_a_token_is_required_only_for_what_needs_one(server_module):
+    """No token is fine for a fully specified public target.
+
+    The README documents that, and the review resource already worked without
+    one; only the defaults that go through /user need credentials.
+    """
+
     async def run():
         async with Client(server_module.mcp) as client:
+            # No token means no token: the header the client was built with has
+            # to go too, or /user still answers.
             server_module._app.gh.token = ""
-            result = await client.call_tool("get_gemini_reviews", {"repo": "demo"})
-            assert result.is_error is True
-            assert "token bulunamadı" in result.content[0].text
+            server_module._app.gh.client.headers.pop("Authorization", None)
+
+            # An owner-less repo has to ask /user who the owner is.
+            missing_owner = await client.call_tool("get_gemini_reviews", {"repo": "demo"})
+            assert missing_owner.is_error is True
+            assert "Tam yolu ver" in missing_owner.content[0].text
+
+            # So does working out whose "/gemini review" comment marks the cutoff.
+            missing_user = await client.call_tool(
+                "get_gemini_reviews", {"repo": "mytsx/demo", "pr": 42}
+            )
+            assert missing_user.is_error is True
+            assert "after_last_review=false" in missing_user.content[0].text
+
+            # Fully specified, no cutoff: nothing needs authentication.
+            explicit = await client.call_tool(
+                "get_gemini_reviews",
+                {"repo": "mytsx/demo", "pr": 42, "after_last_review": False},
+            )
+            assert explicit.is_error is False
+            assert explicit.structured_content["counts"]["reviews"] == 2
 
     anyio.run(run)
 

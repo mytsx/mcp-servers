@@ -86,12 +86,21 @@ for (const command of [
   'chmod --reference=/etc/passwd -R /tmp/x',
   'echo hi; rm -rf /tmp/x',
   'true && rm -r /tmp/x',
+  "r''m -rf /tmp/x",
+  'chmod 755 /tmp/x -R',
+  'chown user /tmp/x --recursive',
   'reboot',
   'docker system prune -f',
 ]) {
   assert.ok(destructiveReason(command), `${command} yıkıcı sayılmalıydı`);
 }
-for (const command of ['ls -la', 'rm --help', 'rm file.txt', 'cat /etc/motd']) {
+for (const command of [
+  'ls -la',
+  'rm --help',
+  'rm file.txt',
+  'chmod 755 /tmp/x',
+  'cat /etc/motd',
+]) {
   assert.equal(destructiveReason(command), null, `${command} yıkıcı sayılmamalıydı`);
 }
 console.log('DESTRUCTIVE PATTERNS: ok');

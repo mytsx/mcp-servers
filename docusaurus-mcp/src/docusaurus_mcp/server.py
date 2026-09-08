@@ -256,6 +256,7 @@ class DocIndex:
 
     site_title: str
     spa_mode: bool = False
+    failed_pages: list[str] = field(default_factory=list)
     docs: list[Doc] = field(default_factory=list)
     categories: dict[str, list[Doc]] = field(default_factory=dict)
     by_id: dict[str, Doc] = field(default_factory=dict)
@@ -569,9 +570,9 @@ async def build_index(
         jobs = [(lambda d=doc: _fill_from_html(client, d)) for doc in index.docs]
         await _run_bounded(jobs, progress)
 
-        failed = [doc for doc in index.docs if not doc.fetched]
-        if failed:
-            logger.warning("%d sayfa alınamadı, indekse konmadı", len(failed))
+        index.failed_pages = [doc.url for doc in index.docs if not doc.fetched]
+        if index.failed_pages:
+            logger.warning("%d sayfa alınamadı", len(index.failed_pages))
         index.docs = [doc for doc in index.docs if doc.fetched]
 
     index.reindex()
@@ -762,12 +763,19 @@ async def refresh_index(ctx: Context[AppContext]) -> IndexStatus:
     except httpx2.HTTPError as exc:
         raise ToolError(f"{SITE_URL} taranamadı: {exc}") from exc
 
-    # build_index treats a failed sitemap as best-effort and can come back with
-    # nothing. Installing that would report success with doc_count=0 and break
-    # every tool until the next refresh, so the working index is kept instead.
+    # An incomplete crawl is not installed. A failed sitemap comes back with no
+    # documents; a partial outage comes back missing whichever pages answered
+    # with an error. Installing either would report success while quietly
+    # dropping pages out of search and fetch, so the working index is kept.
     if not fresh.docs:
         raise ToolError(
             f"{SITE_URL} tarandı ama hiç döküman bulunamadı; mevcut indeks "
+            f"({len(app.index.docs)} döküman) korundu."
+        )
+    if fresh.failed_pages:
+        raise ToolError(
+            f"{len(fresh.failed_pages)} sayfa alınamadı, örneğin "
+            f"{fresh.failed_pages[0]}; eksik bir indeks kurmuyorum, mevcut indeks "
             f"({len(app.index.docs)} döküman) korundu."
         )
 

@@ -415,11 +415,6 @@ class Database:
 
     def _connect_blocking(self, user: str, password: str, dsn: str) -> None:
         self.connection = oracledb.connect(user=user, password=password, dsn=dsn)
-        if self.read_only:
-            # Enforced by Oracle rather than by reading the statement: a SELECT
-            # can call a function that writes, and no classifier sees that.
-            with self.connection.cursor() as cursor:
-                cursor.execute("SET TRANSACTION READ ONLY")
 
     async def connect(self) -> None:
         raw = os.getenv("ORACLE_CONNECTION_STRING")
@@ -473,17 +468,40 @@ class Database:
 
     # -- running statements ------------------------------------------------
 
+    def _begin_read_only_blocking(self) -> None:
+        """Start a fresh read-only transaction.
+
+        Oracle has no session-level read-only setting: `SET TRANSACTION READ
+        ONLY` opens a transaction and freezes its snapshot until it ends. Doing
+        it once at connect meant every later call served that startup snapshot
+        and could not see anything another session had committed since. It is
+        committed and reopened per operation instead, which both refreshes the
+        snapshot and keeps Oracle — not the classifier — the thing refusing a
+        write.
+        """
+        assert self.connection is not None
+        with self.connection.cursor() as cursor:
+            self.connection.commit()  # end the previous read-only transaction
+            cursor.execute("SET TRANSACTION READ ONLY")
+
     def _fetch_blocking(
         self, sql: str, params: dict | None
     ) -> tuple[list[dict], list[str], int]:
         assert self.connection is not None
+        if self.read_only:
+            self._begin_read_only_blocking()
         with self.connection.cursor() as cursor:
             cursor.execute(sql, params or {})
             if cursor.description is None:
                 self.connection.commit()
                 return [], [], max(cursor.rowcount, 0)
             columns = [desc[0] for desc in cursor.description]
-            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            # Normalized here rather than by the caller: reading a CLOB is
+            # blocking database I/O, and this is the thread that may block.
+            rows = [
+                {column: _jsonable(value) for column, value in zip(columns, row)}
+                for row in cursor.fetchall()
+            ]
             return rows, columns, len(rows)
 
     async def _run_cancellable(
@@ -696,7 +714,12 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
 mcp = MCPServer("oracle-mcp-server", version=__version__, lifespan=app_lifespan)
 
-_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+# Not read_only_hint=True: every one of these records the call in the query
+# history, which creates that database and its directory on first use. The
+# annotation has to describe what the tool does, not what it is for.
+_READ_ONLY = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
 
 
 def _db(ctx: Context[AppContext]) -> Database:
@@ -881,7 +904,7 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
     result = QueryResult(
         sql=effective_sql,
         columns=columns,
-        rows=[{k: _jsonable(v) for k, v in row.items()} for row in rows],
+        rows=rows,
         row_count=len(rows) if columns else affected,
         limit_applied=limit_applied,
         dbms_output=dbms_output,
@@ -948,6 +971,10 @@ async def _fetch_columns(db: Database, table: str) -> list[ColumnInfo]:
     ]
 
 
+@_log_exploration(
+    "get_source_code",
+    lambda object_name, object_type: f"GET SOURCE: {object_name} ({object_type or 'AUTO'})",
+)
 @mcp.tool(
     title="Kaynak kodu getir",
     description="Get the source of a PL/SQL object (FUNCTION, PROCEDURE, TRIGGER, PACKAGE, "
@@ -992,15 +1019,7 @@ async def get_source_code(
     if not rows:
         raise ToolError(f"'{name}' için {wanted} kaynağı bulunamadı.")
 
-    source = "".join(_jsonable(row["TEXT"]) or "" for row in rows)
-    db.log_query(
-        "get_source_code",
-        query_text=f"GET SOURCE: {name} ({wanted})",
-        execution_time_ms=0,
-        status="success",
-        row_count=len(rows),
-        error_message="",
-    )
+    source = "".join(str(row["TEXT"] or "") for row in rows)
     return SourceCode(
         object_name=name,
         object_type=wanted,
@@ -1171,7 +1190,8 @@ async def get_table_constraints(
                     uc.r_constraint_name, ucc.column_name, ucc.position
              FROM user_constraints uc
              LEFT JOIN user_cons_columns ucc ON uc.constraint_name = ucc.constraint_name
-             WHERE uc.table_name = :table_name"""
+             WHERE uc.table_name = :table_name
+               AND uc.constraint_type IN ('P', 'R', 'C', 'U')"""
     params: dict[str, Any] = {"table_name": table}
     if constraint_type:
         sql += " AND uc.constraint_type = :constraint_type"
@@ -1359,6 +1379,11 @@ async def explain_plan(
     format: Annotated[PlanFormat, Field(description="Level of detail in the plan.")] = "typical",
 ) -> ExplainPlan:
     db = _db(ctx)
+    if db.read_only:
+        raise ToolError(
+            "EXPLAIN PLAN, planı PLAN_TABLE'a yazar; read-only modda bu mümkün değil. "
+            "Plan almak için READ_ONLY=false ile çalıştır."
+        )
     statement_id = f"MCP_{uuid.uuid4().hex[:20]}"
 
     try:

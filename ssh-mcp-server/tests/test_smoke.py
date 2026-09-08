@@ -176,6 +176,12 @@ def _client(server_module, confirm=True, asked=None):
         ("sh -c 'echo ok; rm --no-preserve-root -rf /'", True, True),
         ('bash -c "rm -rf /"', True, True),
         ("sh -c 'ls'", False, False),
+        # A shell concatenates the fragments of one word, so this runs `rm`.
+        ("r''m -rf --no-preserve-root /", True, True),
+        # chmod and chown take options after their operands too.
+        ("chmod 755 /srv -R", False, True),
+        ("chown user /srv --recursive", False, True),
+        ("chmod 755 /srv", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),
@@ -355,7 +361,10 @@ class _StubSFTP:
                 return stub.files[path]
 
             def write(self_inner, data: str) -> None:
-                stub.files[path] = data.encode("utf-8")
+                if "a" in mode:
+                    stub.files[path] = stub.files.get(path, b"") + data.encode("utf-8")
+                else:
+                    stub.files[path] = data.encode("utf-8")
 
         return _Handle()
 
@@ -365,7 +374,8 @@ def test_write_file_blocking_reports_only_what_it_added(raw_module):
 
     This drives the real _write_file_blocking, not the fake host, because the
     inflated count came from that function rewriting the whole file in append
-    mode and then measuring the buffer it wrote.
+    mode and then measuring the buffer it wrote. It appends at the server now,
+    so there is no buffer to measure and no read-modify-write to race.
     """
     files = {"/var/log/app.log": b"x" * 1000}
     connection = raw_module.SSHConnection(raw_module.SSHConfig.from_env())

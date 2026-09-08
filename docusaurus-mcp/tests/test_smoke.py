@@ -208,3 +208,43 @@ def test_pages_that_fail_are_left_out_of_the_index(mcp_server):
             assert after["doc_count"] == 3, after
 
     anyio.run(run)
+
+
+def test_a_partial_outage_does_not_shrink_the_index(mcp_server):
+    """One failing page must not quietly disappear from search and fetch.
+
+    A crawl that loses a page still comes back non-empty, so the emptiness
+    check alone would install it and report success while that page stopped
+    being findable.
+    """
+    import docusaurus_mcp.server as module
+
+    original_get = module.httpx2.AsyncClient.get
+
+    async def one_page_down(self, url, *args, **kwargs):
+        if "/docs/api/tools" in str(url):
+            request = module.httpx2.Request("GET", str(url))
+            return module.httpx2.Response(503, request=request, text="unavailable")
+        return await original_get(self, url, *args, **kwargs)
+
+    async def run():
+        async with Client(mcp_server) as client:
+            assert (await client.call_tool("get_doc_structure", {})).structured_content[
+                "doc_count"
+            ] == 3
+
+            module.httpx2.AsyncClient.get = one_page_down
+            try:
+                result = await client.call_tool("refresh_index", {})
+                assert result.is_error is True
+                assert "sayfa alınamadı" in result.content[0].text
+            finally:
+                module.httpx2.AsyncClient.get = original_get
+
+            # All three are still there, including the one that failed.
+            after = (await client.call_tool("get_doc_structure", {})).structured_content
+            assert after["doc_count"] == 3
+            found = await client.call_tool("fetch_doc", {"doc_ref": "tools"})
+            assert found.is_error is False
+
+    anyio.run(run)

@@ -110,8 +110,9 @@ CONFIRM_PATTERNS = [
         # uppercase R never fired at all.
         # The command name is matched case-insensitively, the flag is not.
         re.compile(
-            r"\b(?i:chown|chmod)\s+(?:-{1,2}[a-zA-Z-]+(?:=[^\s]*)?\s+)*"
-            r"(?:-[a-zA-Z]*R|--(?i:recursive)\b)"
+            # Like rm, these accept options after their operands:
+            # `chmod 755 /srv -R` is recursive.
+            rf"\b(?i:chown|chmod)\s+{_RM_ARGS}(?:-[a-zA-Z]*R|--(?i:recursive)\b)"
         ),
         "izinleri özyinelemeli değiştiriyor",
     ),
@@ -275,6 +276,10 @@ class SSHConnection:
         self.activity_logger = get_activity_logger()
         self.last_connection_check: float | None = None
         self.connection_failures = 0
+        # Held across check/close/connect: two callers finding a dead link would
+        # otherwise each build a client, and the later assignment would strand
+        # the earlier transport without closing it.
+        self._connect_lock = anyio.Lock()
 
 
     # -- lifecycle ---------------------------------------------------------
@@ -367,12 +372,13 @@ class SSHConnection:
 
     async def ensure(self) -> bool:
         """Make sure the link is up. Returns True when it had to reconnect."""
-        if await self.is_alive():
-            return False
-        logger.info("SSH bağlantısı koptu, yeniden bağlanılıyor")
-        self.close()
-        await self.connect()
-        return True
+        async with self._connect_lock:
+            if await self.is_alive():
+                return False
+            logger.info("SSH bağlantısı koptu, yeniden bağlanılıyor")
+            self.close()
+            await self.connect()
+            return True
 
     # -- running commands --------------------------------------------------
 
@@ -511,23 +517,20 @@ class SSHConnection:
         """
         assert self.client is not None
         written = len(content.encode("utf-8"))
-        payload = content
         with self.client.open_sftp() as sftp:
             if exclusive:
                 # "x" is O_CREAT|O_EXCL: if the file appeared since it was
                 # checked, this fails instead of overwriting it unasked.
-                with sftp.open(remote_path, "x") as f:
-                    f.write(payload)
-                return written
-            if append:
-                try:
-                    with sftp.open(remote_path, "r") as f:
-                        existing = f.read().decode("utf-8", errors="replace")
-                except FileNotFoundError:
-                    existing = ""
-                payload = existing + content
-            with sftp.open(remote_path, "w") as f:
-                f.write(payload)
+                mode = "x"
+            elif append:
+                # "a" appends at the server. Reading the file and rewriting it
+                # whole would let two overlapping appends each start from the
+                # same contents, and the later write would discard the earlier.
+                mode = "a"
+            else:
+                mode = "w"
+            with sftp.open(remote_path, mode) as f:
+                f.write(content)
         return written
 
     def _file_exists_blocking(self, remote_path: str) -> bool:
@@ -587,13 +590,13 @@ _SEGMENT_SEPARATOR = re.compile(r"(?:\|\||&&|[;\n|&])")
 def command_segments(command: str) -> list[str]:
     """The individual commands in a shell line, each classified on its own.
 
-    Quote characters are dropped before splitting. `sh -c 'echo ok; rm -rf /'`
-    otherwise leaves a trailing quote on the nested command, and a rule anchored
-    to the end of a segment stops matching something that still runs. Dropping
-    them can only make a segment look more dangerous than it is, which is the
-    safe direction for a blocklist.
+    Quote characters are removed, not replaced with a space: a shell
+    concatenates the fragments of one word, so `r''m -rf /` runs `rm`. Turning
+    the quotes into spaces produced `r  m` and matched nothing. Removing them
+    can only make a segment look more dangerous than it is, which is the safe
+    direction for a blocklist.
     """
-    unquoted = command.replace("'", " ").replace('"', " ").replace("\\", " ")
+    unquoted = command.replace("'", "").replace('"', "").replace("\\", "")
     return [part.strip() for part in _SEGMENT_SEPARATOR.split(unquoted) if part.strip()]
 
 

@@ -57,6 +57,27 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-oracle-mcp**: the read-only transaction is renewed per call. Opening one at connect
+  froze its snapshot, so every later call served the startup view of the database.
+  `explain_plan` says plainly that it needs `READ_ONLY=false`, since it writes to PLAN_TABLE.
+- **ssh-mcp-server**: SFTP append uses the server's append mode instead of rewriting the
+  whole file, so two overlapping appends cannot discard each other.
+- **ssh-mcp-server** and **asger-terminal-mcp**: quote removal concatenates the way a shell
+  does — `r''m -rf /` runs `rm` — and `chmod`/`chown` options are recognised after the
+  operands as well.
+- **ssh-mcp-server**: establishing the connection is serialized, so two callers finding a
+  dead link cannot each build a client and strand one of them.
+- **mapeg-oracle-mcp**: LOB values are normalized on the worker thread; reading a CLOB is
+  blocking I/O that was happening on the event loop.
+- **mapeg-oracle-mcp**: `get_table_constraints` asks only for the four types it models, and
+  `get_source_code` records failures in the query history like the other exploration tools.
+- **docusaurus-mcp**: a crawl that lost pages is refused rather than installed — losing one
+  page of three still leaves a non-empty index, and those pages would silently stop being
+  findable.
+- **gemini-reviews-mcp**: a token is required only for what needs one. A fully specified
+  public PR reads through unauthenticated endpoints again, as the README says it does.
+- The exploration tools and `extract_text` are no longer advertised read-only: they write a
+  query-history row and a screenshot directory respectively.
 - **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: read-only mode is enforced by the database,
   not only by reading the statement. A plain `SELECT destructive_function()` is a write that
   no classifier can see, so the session itself is opened read-only.

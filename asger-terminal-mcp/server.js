@@ -50,7 +50,8 @@ const DESTRUCTIVE_PATTERNS = [
     // Scan the whole option prefix, and match both spellings of recursive. The
     // command name is case-insensitive; the short flag is not, because
     // `chmod -R` and `chmod -r` are different things.
-    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:-{1,2}[a-zA-Z-]+(?:=[^\s]*)?\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
+    // Options can follow the operands: `chmod 755 /srv -R` is recursive.
+    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:[^\s;|&]+\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
     'izinleri özyinelemeli değiştiriyor',
   ],
   [/\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b/i, 'paket kaldırıyor'],
@@ -85,13 +86,13 @@ function requirePage() {
 /**
  * The individual commands in a shell line, each judged on its own.
  *
- * Quote characters are dropped first: `sh -c 'echo ok; rm -rf /'` otherwise
- * leaves a trailing quote on the nested command and a pattern anchored to the
- * end stops matching something that still runs.
+ * Quote characters are removed, not replaced with a space: a shell concatenates
+ * the fragments of one word, so `r''m -rf /` runs `rm`. Turning the quotes into
+ * spaces produced `r  m` and matched nothing.
  */
 function commandSegments(command) {
   return command
-    .replace(/['"\\]/g, ' ')
+    .replace(/['"\\]/g, '')
     .split(/\|\||&&|[;\n|&]/)
     .map((part) => part.trim())
     .filter(Boolean);
@@ -463,7 +464,9 @@ export function buildServer() {
       rawText: z.string().describe('OCR çıktısının tamamı, ayıklama öncesi.'),
       caveat: z.string(),
     }),
-    annotations: { readOnlyHint: true, openWorldHint: true },
+    // Not read-only: taking the screenshot creates SCREENSHOT_DIR and writes a
+    // PNG there before deleting it again, so the directory outlives the call.
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
   async (ctx) => {
     requirePage();

@@ -327,18 +327,22 @@ mcp = MCPServer("gemini-reviews-mcp", version=__version__, lifespan=app_lifespan
 
 
 async def _resolve_target(gh: GitHub, repo: str, pr: int | None) -> tuple[str, int]:
-    """Fill in the repo owner and the PR number when the caller left them out."""
-    if not gh.token:
-        raise ToolError(
-            "GitHub token bulunamadı. `gh auth login` çalıştır ya da GITHUB_TOKEN ayarla."
-        )
+    """Fill in the repo owner and the PR number when the caller left them out.
 
+    A token is required only for what actually needs one. A fully specified
+    public target reads through unauthenticated endpoints, which is the no-token
+    support the README documents; only the defaults that go through `/user`
+    demand credentials.
+    """
     if "/" not in repo:
+        if not gh.token:
+            raise ToolError(
+                "Depo sahibini bulmak için GitHub kimliği gerekiyor. Tam yolu ver "
+                "(owner/repo), ya da `gh auth login` çalıştır / GITHUB_TOKEN ayarla."
+            )
         owner = await gh.authenticated_user()
         if not owner:
-            raise ToolError(
-                "Depo sahibi belirlenemedi. Tam yolu ver: owner/repo."
-            )
+            raise ToolError("Depo sahibi belirlenemedi. Tam yolu ver: owner/repo.")
         repo = f"{owner}/{repo}"
         logger.info("Depo sahibi otomatik bulundu: %s", owner)
 
@@ -394,8 +398,9 @@ async def get_gemini_reviews(
         who = username or await gh.authenticated_user()
         if not who:
             raise ToolError(
-                "GitHub kullanıcısı belirlenemedi. `username` parametresini ver ya da "
-                "after_last_review=false kullan."
+                "GitHub kullanıcısı belirlenemedi; kimlik doğrulaması olmadan "
+                "'/gemini review' yorumunun sahibi bilinemiyor. `username` parametresini "
+                "ver ya da after_last_review=false kullan."
             )
         after_date = await gh.last_review_request(repo, pr, who)
 

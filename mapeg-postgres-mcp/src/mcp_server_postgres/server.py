@@ -507,7 +507,12 @@ async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
 
 mcp = MCPServer("postgresql-mcp-server", version=__version__, lifespan=app_lifespan)
 
-_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+# Not read_only_hint=True: every one of these records the call in the query
+# history, which creates that database and its directory on first use. The
+# annotation has to describe what the tool does, not what it is for.
+_READ_ONLY = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
 
 
 def _db(ctx: Context[AppContext]) -> Database:
