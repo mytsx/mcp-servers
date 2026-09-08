@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp**: every statement in the input is classified, not just the first.
+  psycopg2 runs `SELECT 1; DELETE FROM t` as one call, and the leading `SELECT` used to
+  clear it past both read-only mode and the confirmation.
+- **ssh-mcp-server**: `chmod -R` and `chown -R` are recognised. The command was lowercased
+  before being matched against a pattern that required an uppercase `R`, so a recursive
+  permission change never asked for confirmation at all.
+- **ssh-mcp-server**: when a write was auto-approved because the path did not exist, it is
+  now an exclusive create. A file that appeared in between was previously overwritten
+  without anyone being asked.
+- **agent-chat**: reading a room no longer creates it. A mistyped room name in a read-only
+  tool used to leave an empty phantom room behind in `list_rooms`.
+- **mapeg-oracle-mcp**: Oracle native JSON keeps its object/array shape instead of being
+  turned into a Python repr string.
 - **mapeg-oracle-mcp**: a PL/SQL block is treated as a write. `BEGIN DELETE FROM t; END;`
   starts with `BEGIN`, so it used to skip both the confirmation and read-only mode.
 - **mapeg-postgres-mcp**: a data-modifying CTE is treated as a write. The leading keyword of

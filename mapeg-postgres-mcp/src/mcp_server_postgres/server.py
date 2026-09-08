@@ -193,19 +193,40 @@ def _strip_literals(sql: str) -> str:
     return re.sub(r"'(?:''|[^'])*'", "''", without_line)
 
 
-def is_write_query(sql: str) -> bool:
-    """Whether this statement can change data.
+def split_statements(sql: str) -> list[str]:
+    """Split on top-level semicolons, ignoring those inside literals or comments.
 
-    Conservative by design: the answer gates both read-only mode and the
-    confirmation prompt, so a false negative runs an unconfirmed write while a
-    false positive only asks a question that was not strictly needed.
+    psycopg2 happily executes `SELECT 1; DELETE FROM t` as one call, so every
+    statement in the input has to be classified, not just the leading one.
     """
+    masked = _strip_literals(sql)
+    parts: list[str] = []
+    start = 0
+    for index, character in enumerate(masked):
+        if character == ";":
+            parts.append(sql[start:index])
+            start = index + 1
+    parts.append(sql[start:])
+    return [part for part in parts if part.strip()]
+
+
+def _statement_is_write(sql: str) -> bool:
     keyword = statement_keyword(sql)
     if keyword in WRITE_KEYWORDS:
         return True
     if keyword == "WITH":
         return _CTE_WRITE.search(_strip_literals(sql)) is not None
     return False
+
+
+def is_write_query(sql: str) -> bool:
+    """Whether anything in this input can change data.
+
+    Conservative by design: the answer gates both read-only mode and the
+    confirmation prompt, so a false negative runs an unconfirmed write while a
+    false positive only asks a question that was not strictly needed.
+    """
+    return any(_statement_is_write(part) for part in split_statements(sql))
 
 
 class Database:
@@ -267,19 +288,47 @@ class Database:
     ) -> tuple[list[dict], list[str], int]:
         """Run the statement so that cancelling the call also cancels the query.
 
-        `anyio.to_thread.run_sync` cannot interrupt the thread it started: on
-        cancellation it simply stops waiting, leaving the statement running and
-        holding its locks. Asking the server to cancel is what actually stops
-        the work, and it is safe to call from another thread.
+        `anyio.to_thread.run_sync` cannot interrupt the thread it started, and
+        with the default `abandon_on_cancel=False` it does not even return until
+        that thread finishes — so catching the cancellation around it never runs
+        while the query is still going. A watchdog task is cancelled at the same
+        moment instead; it shields itself long enough to ask the server to
+        cancel, which makes the driver raise and the thread finish. Abandoning
+        the thread is not an option here: it would leave it using a connection
+        the next call is about to reuse.
         """
-        try:
-            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
-        except anyio.get_cancelled_exc_class():
-            connection = self.connection
-            if connection is not None:
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(connection.cancel)
-            raise
+        state = {"finished": False}
+
+        async def watchdog() -> None:
+            try:
+                await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                if not state["finished"]:
+                    connection = self.connection
+                    if connection is not None:
+                        with anyio.CancelScope(shield=True):
+                            await anyio.to_thread.run_sync(connection.cancel)
+                raise
+
+        result: tuple[list[dict], list[str], int] | None = None
+        failure: Exception | None = None
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(watchdog)
+            try:
+                result = await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+            except Exception as exc:
+                # Held rather than raised here: a task group would wrap it in an
+                # ExceptionGroup, and the caller matches on the driver's own type.
+                failure = exc
+            finally:
+                state["finished"] = True
+                task_group.cancel_scope.cancel()
+
+        if failure is not None:
+            raise failure
+        assert result is not None
+        return result
 
     async def fetch(self, sql: str, params: tuple | None = None) -> tuple[list[dict], list[str], int]:
         """Run a statement and return (rows, columns, rowcount)."""
@@ -409,7 +458,12 @@ async def _run_sql(
     """Run one statement, apply the row limit, and record it in the query log."""
     effective_sql = sql.strip()
     limit_applied: int | None = None
-    if statement_keyword(effective_sql) == "SELECT" and "LIMIT" not in effective_sql.upper():
+    single_statement = len(split_statements(effective_sql)) == 1
+    if (
+        single_statement
+        and statement_keyword(effective_sql) == "SELECT"
+        and "LIMIT" not in effective_sql.upper()
+    ):
         effective_sql = f"{effective_sql} LIMIT {limit}"
         limit_applied = limit
 

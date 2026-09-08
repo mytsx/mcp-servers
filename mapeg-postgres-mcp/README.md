@@ -220,8 +220,9 @@ Execute any SQL query on the connected PostgreSQL database.
 | `limit` | integer | No | Row limit added to a SELECT that has no LIMIT (default: 100) |
 
 Returns `sql` (as actually run), `columns`, `rows`, `row_count`, `limit_applied` and
-`duration_ms`. Non-JSON column types are converted: numerics become floats, timestamps
-become ISO-8601 strings, bytes become a size marker.
+`duration_ms`. Non-JSON column types are converted: `numeric` becomes a **string** so that a
+value wider than an IEEE-754 float is not silently rounded, timestamps become ISO-8601
+strings, and bytes become a size marker.
 
 **Writes are confirmed first.** A statement starting with INSERT, UPDATE, DELETE, DROP,
 ALTER, CREATE, TRUNCATE, MERGE, GRANT or REVOKE puts a question in front of the user before

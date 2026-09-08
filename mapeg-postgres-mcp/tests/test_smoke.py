@@ -12,6 +12,7 @@ the test may create and drop a table in. To run it locally:
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import anyio
@@ -289,3 +290,38 @@ def test_resources_and_prompts(mcp_server):
             }
 
     anyio.run(run)
+
+
+def test_cancelling_a_call_cancels_the_query(mcp_server, database):
+    """A cancelled call must stop the statement, not just stop waiting for it.
+
+    A worker thread cannot be interrupted, so without asking the server to
+    cancel, `pg_sleep` would keep running and holding its resources long after
+    the caller gave up.
+    """
+
+    async def run():
+        async with _client(mcp_server) as client:
+            with anyio.move_on_after(2):
+                await client.call_tool(
+                    "execute_sql", {"sql": "SELECT pg_sleep(30)"}, read_timeout_seconds=None
+                )
+
+    started = time.monotonic()
+    anyio.run(run)
+    # The call gave up quickly rather than waiting out the sleep.
+    assert time.monotonic() - started < 20
+
+    # And the backend is no longer running it.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with database.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE query LIKE 'SELECT pg_sleep(30)%' AND state = 'active'"
+            )
+            if cursor.fetchone()[0] == 0:
+                return
+        time.sleep(0.25)
+
+    raise AssertionError("pg_sleep hâlâ çalışıyor: iptal veritabanına ulaşmadı")

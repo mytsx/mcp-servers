@@ -4,6 +4,7 @@ Every blocking paramiko call is replaced, so the tests exercise the tool
 surface, the confirmation flow and the safety rules without a real SSH server.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,9 @@ class FakeHost:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {"/etc/motd": b"merhaba dunya\n"}
         self.commands: list[str] = []
+        # When set, this path reports absent once and then springs into
+        # existence, standing in for another process creating it.
+        self.appears_after_check: str | None = None
 
     def install(self, connection_class, monkeypatch) -> None:
         """Replace every blocking paramiko call with this host's own.
@@ -58,12 +62,18 @@ class FakeHost:
             raise FileNotFoundError(path)
         return self.files[path]
 
-    def _write(self, path: str, content: str, append: bool) -> int:
+    def _write(self, path: str, content: str, append: bool, exclusive: bool = False) -> int:
+        if exclusive and path in self.files:
+            raise FileExistsError(path)
         existing = self.files.get(path, b"").decode() if append else ""
         self.files[path] = (existing + content).encode()
         return len(content.encode("utf-8"))  # what this call added
 
     def _exists(self, path: str) -> bool:
+        if path == self.appears_after_check:
+            self.appears_after_check = None
+            self.files[path] = b"someone else got here first"
+            return False
         return path in self.files
 
 
@@ -306,6 +316,8 @@ class _StubSFTP:
             def __enter__(self_inner):
                 if "r" in mode and path not in stub.files:
                     raise FileNotFoundError(path)
+                if "x" in mode and path in stub.files:
+                    raise FileExistsError(path)
                 return self_inner
 
             def __exit__(self_inner, *args):
@@ -354,3 +366,53 @@ def test_append_reports_only_the_appended_bytes(server_module, host):
             assert len(host.files["/var/log/app.log"]) == 1002
 
     anyio.run(run)
+
+
+def test_activity_logger_is_importable_from_any_directory(tmp_path):
+    """`python -m mcp_server_ssh` must find the sidecar activity logger.
+
+    ssh_activity_logger.py lives next to the package, not inside it, so it is
+    only importable because the entry point puts the project root on the path.
+    Without that, logging silently switched itself off unless the process
+    happened to start in ssh-mcp-server/.
+    """
+    import subprocess
+
+    project = Path(__file__).resolve().parents[1]
+    script = (
+        "import mcp_server_ssh.__main__\n"
+        "import mcp_server_ssh.server as server\n"
+        "print(server.ACTIVITY_LOGGING_ENABLED)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,  # deliberately not the project directory
+        env={**os.environ, "PYTHONPATH": str(project / "src"), "SSH_HOST": "testhost"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True", result.stderr
+
+
+def test_a_file_that_appears_after_the_check_is_not_overwritten(server_module, host):
+    """The confirmation was skipped because the path was absent; it must stay absent.
+
+    Between the resolver's check and the write, another process can create the
+    file. An exclusive create turns that race into a refusal instead of an
+    unconfirmed overwrite.
+    """
+    host.appears_after_check = "/tmp/racy.txt"
+
+    async def run():
+        async with _client(server_module) as client:
+            result = await client.call_tool(
+                "file_operations",
+                {"operation": "write", "path": "/tmp/racy.txt", "content": "mine"},
+            )
+            assert result.is_error is True
+            assert "onay gerektirir" in result.content[0].text
+
+    anyio.run(run)
+    assert host.files["/tmp/racy.txt"] == b"someone else got here first"

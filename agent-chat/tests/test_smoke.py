@@ -239,3 +239,25 @@ def test_concurrent_writers_lose_nothing(tmp_path):
     for agent in agents:
         sent = {m["content"] for m in messages if m["from"] == agent}
         assert sent == {f"{agent}-{i}" for i in range(per_worker)}
+
+
+def test_reading_a_missing_room_does_not_create_it(mcp_server, tmp_path):
+    """A mistyped room name must not leave a phantom room behind.
+
+    read_messages is advertised read-only, but it used to go through a helper
+    that created the room directory on the way in, after which the empty room
+    showed up in list_rooms.
+    """
+
+    async def run():
+        async with Client(mcp_server) as client:
+            read = await client.call_tool(
+                "read_messages", {"agent_name": "backend", "room": "yanlis-yazilmis-oda"}
+            )
+            assert read.structured_content["messages"] == []
+
+            assert not (tmp_path / "yanlis-yazilmis-oda").exists()
+            rooms = await client.call_tool("list_rooms", {})
+            assert [r["name"] for r in rooms.structured_content["rooms"]] == []
+
+    anyio.run(run)

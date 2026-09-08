@@ -136,9 +136,18 @@ class ChatStore:
         return room or self.default_room
 
     def room_dir(self, room: str) -> Path:
+        """The room's directory, created if needed. For write paths only."""
         room_dir = self.chat_dir / self.room_name(room)
         room_dir.mkdir(parents=True, exist_ok=True)
         return room_dir
+
+    def room_path(self, room: str) -> Path:
+        """Where the room would be, without bringing it into existence.
+
+        Reading a room that does not exist must not create it: a mistyped name
+        would otherwise leave a phantom room behind in list_rooms.
+        """
+        return self.chat_dir / self.room_name(room)
 
     @staticmethod
     def _decode(content: str, default: dict | list, filepath: Path) -> dict | list:
@@ -211,14 +220,14 @@ class ChatStore:
         cls._update_json(filepath, type(data)(), replace)
 
     def agents(self, room: str) -> dict[str, dict]:
-        raw = self._read_json(self.room_dir(room) / "agents.json", {})
+        raw = self._read_json(self.room_path(room) / "agents.json", {})
         return raw if isinstance(raw, dict) else {}
 
     def save_agents(self, agents: dict[str, dict], room: str) -> None:
         self._write_json(self.room_dir(room) / "agents.json", agents)
 
     def messages(self, room: str) -> list[dict]:
-        raw = self._read_json(self.room_dir(room) / "messages.json", [])
+        raw = self._read_json(self.room_path(room) / "messages.json", [])
         return raw if isinstance(raw, list) else []
 
     def save_messages(self, messages: list[dict], room: str) -> None:

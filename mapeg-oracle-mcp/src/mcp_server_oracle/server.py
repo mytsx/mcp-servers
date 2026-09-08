@@ -261,6 +261,12 @@ def _jsonable(value: Any) -> Any:
         return _jsonable(value.read())
     if isinstance(value, (bytes, memoryview)):
         return f"<{len(bytes(value))} bytes>"
+    # Oracle native JSON arrives as a dict or list; stringifying it would turn
+    # structured data into a Python repr with single quotes.
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
     return str(value)
 
 
@@ -427,19 +433,47 @@ class Database:
     ) -> tuple[list[dict], list[str], int]:
         """Run the statement so that cancelling the call also cancels the query.
 
-        `anyio.to_thread.run_sync` cannot interrupt the thread it started: on
-        cancellation it simply stops waiting, leaving the statement running and
-        holding its locks. Asking the server to cancel is what actually stops
-        the work, and it is safe to call from another thread.
+        `anyio.to_thread.run_sync` cannot interrupt the thread it started, and
+        with the default `abandon_on_cancel=False` it does not even return until
+        that thread finishes — so catching the cancellation around it never runs
+        while the query is still going. A watchdog task is cancelled at the same
+        moment instead; it shields itself long enough to ask the server to
+        cancel, which makes the driver raise and the thread finish. Abandoning
+        the thread is not an option here: it would leave it using a connection
+        the next call is about to reuse.
         """
-        try:
-            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
-        except anyio.get_cancelled_exc_class():
-            connection = self.connection
-            if connection is not None:
-                with anyio.CancelScope(shield=True):
-                    await anyio.to_thread.run_sync(connection.cancel)
-            raise
+        state = {"finished": False}
+
+        async def watchdog() -> None:
+            try:
+                await anyio.sleep_forever()
+            except anyio.get_cancelled_exc_class():
+                if not state["finished"]:
+                    connection = self.connection
+                    if connection is not None:
+                        with anyio.CancelScope(shield=True):
+                            await anyio.to_thread.run_sync(connection.cancel)
+                raise
+
+        result: tuple[list[dict], list[str], int] | None = None
+        failure: Exception | None = None
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(watchdog)
+            try:
+                result = await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+            except Exception as exc:
+                # Held rather than raised here: a task group would wrap it in an
+                # ExceptionGroup, and the caller matches on the driver's own type.
+                failure = exc
+            finally:
+                state["finished"] = True
+                task_group.cancel_scope.cancel()
+
+        if failure is not None:
+            raise failure
+        assert result is not None
+        return result
 
     async def fetch(
         self, sql: str, params: dict | None = None

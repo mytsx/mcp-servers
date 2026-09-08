@@ -23,6 +23,7 @@ from mcp.server.mcpserver import Context, Elicit, Resolve
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from . import __version__
 
@@ -90,18 +91,31 @@ CONFIRM_PATTERNS = [
     (
         # A recursive/force flag anywhere in the options, not just the first one:
         # `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`.
-        rf"\brm\s+{_RM_FLAGS}(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)",
+        re.compile(rf"\brm\s+{_RM_FLAGS}(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)", re.I),
         "dosya/dizin siliyor",
     ),
-    (r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+[06]\b", "sunucuyu kapatıyor/yeniden başlatıyor"),
-    (r"\bkill\s+-9\b|\bkillall\b|\bpkill\b", "süreçleri zorla sonlandırıyor"),
-    (r"\btruncate\b|>\s*/", "dosya içeriğini siliyor"),
-    (r"\b(chown|chmod)\s+-[a-z]*R", "izinleri özyinelemeli değiştiriyor"),
-    (r"\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b", "paket kaldırıyor"),
-    (r"\bdocker\s+(rm|rmi|prune|system\s+prune)\b", "Docker kaynaklarını siliyor"),
-    (r"\bdrop\s+(database|table)\b", "veritabanı nesnesi siliyor"),
-    (r"\bmv\s+.*\s+/dev/null\b", "dosyayı yok ediyor"),
-    (r"\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f)\b", "commit edilmemiş değişiklikleri siliyor"),
+    (
+        re.compile(r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+[06]\b", re.I),
+        "sunucuyu kapatıyor/yeniden başlatıyor",
+    ),
+    (re.compile(r"\bkill\s+-9\b|\bkillall\b|\bpkill\b", re.I), "süreçleri zorla sonlandırıyor"),
+    (re.compile(r"\btruncate\b|>\s*/", re.I), "dosya içeriğini siliyor"),
+    (
+        # Case matters here: chmod/chown spell recursive as an uppercase -R, and
+        # the long form as --recursive. Matching a lowercased command against an
+        # uppercase R never fired at all.
+        # The command name is matched case-insensitively, the flag is not.
+        re.compile(r"\b(?i:chown|chmod)\s+(?:-{1,2}[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*R|--(?i:recursive)\b)"),
+        "izinleri özyinelemeli değiştiriyor",
+    ),
+    (re.compile(r"\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b", re.I), "paket kaldırıyor"),
+    (re.compile(r"\bdocker\s+(rm|rmi|prune|system\s+prune)\b", re.I), "Docker kaynaklarını siliyor"),
+    (re.compile(r"\bdrop\s+(database|table)\b", re.I), "veritabanı nesnesi siliyor"),
+    (re.compile(r"\bmv\s+.*\s+/dev/null\b", re.I), "dosyayı yok ediyor"),
+    (
+        re.compile(r"\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f)\b", re.I),
+        "commit edilmemiş değişiklikleri siliyor",
+    ),
 ]
 
 
@@ -418,7 +432,9 @@ class SSHConnection:
         with self.client.open_sftp() as sftp, sftp.open(remote_path, "rb") as f:
             return f.read()
 
-    def _write_file_blocking(self, remote_path: str, content: str, append: bool) -> int:
+    def _write_file_blocking(
+        self, remote_path: str, content: str, append: bool, exclusive: bool = False
+    ) -> int:
         """Write the file and return the number of bytes *this call* added.
 
         In append mode the whole file is rewritten, so the buffer that goes to
@@ -429,6 +445,12 @@ class SSHConnection:
         written = len(content.encode("utf-8"))
         payload = content
         with self.client.open_sftp() as sftp:
+            if exclusive:
+                # "x" is O_CREAT|O_EXCL: if the file appeared since it was
+                # checked, this fails instead of overwriting it unasked.
+                with sftp.open(remote_path, "x") as f:
+                    f.write(payload)
+                return written
             if append:
                 try:
                     with sftp.open(remote_path, "r") as f:
@@ -458,13 +480,25 @@ class SSHConnection:
         except OSError as exc:
             raise ToolError(f"SFTP okuma hatası ({remote_path}): {exc}") from exc
 
-    async def write_file(self, remote_path: str, content: str, append: bool = False) -> int:
+    async def write_file(
+        self,
+        remote_path: str,
+        content: str,
+        append: bool = False,
+        exclusive: bool = False,
+    ) -> int:
+        """Write a file. With `exclusive`, fail rather than replace an existing one."""
         await self.ensure()
         try:
             return await anyio.to_thread.run_sync(
-                self._write_file_blocking, remote_path, content, append
+                self._write_file_blocking, remote_path, content, append, exclusive
             )
         except OSError as exc:
+            if exclusive:
+                raise ToolError(
+                    f"'{remote_path}' kontrol edildikten sonra oluşturulmuş; üzerine "
+                    "yazmak onay gerektirir. Aynı çağrıyı tekrarla, bu kez sorulacak."
+                ) from exc
             raise ToolError(f"SFTP yazma hatası ({remote_path}): {exc}") from exc
 
     async def file_exists(self, remote_path: str) -> bool:
@@ -487,10 +521,13 @@ def blocked_reason(command: str) -> str | None:
 
 
 def confirm_reason(command: str) -> str | None:
-    """A plain-language reason to ask the user first, or None to just run it."""
-    lowered = command.lower()
+    """A plain-language reason to ask the user first, or None to just run it.
+
+    Matched against the command as written: the patterns carry their own flags,
+    because `chmod -R` is not the same option as `chmod -r`.
+    """
     for pattern, reason in CONFIRM_PATTERNS:
-        if re.search(pattern, lowered):
+        if pattern.search(command):
             return reason
     return None
 
@@ -616,6 +653,10 @@ async def execute_command(
 
 class WriteConfirmation(BaseModel):
     confirm: bool = Field(description="Overwrite the file on the remote server?")
+    # Server-computed, and hidden from the elicitation schema: it records why no
+    # question was asked, so the write can be made exclusive and lose the race
+    # instead of silently overwriting a file that appeared in the meantime.
+    approved_because_absent: SkipJsonSchema[bool] = False
 
 
 async def confirm_write(
@@ -628,7 +669,9 @@ async def confirm_write(
         return WriteConfirmation(confirm=True)
     ssh = _ssh(ctx)
     if not await ssh.file_exists(path):
-        return WriteConfirmation(confirm=True)  # creating a new file: nothing to lose
+        # Nothing to lose *right now*; the write is made exclusive so that a file
+        # created in between fails the call rather than being overwritten.
+        return WriteConfirmation(confirm=True, approved_because_absent=True)
     return Elicit(f"'{path}' zaten var ve üzerine yazılacak. Onaylıyor musun?", WriteConfirmation)
 
 
@@ -663,7 +706,9 @@ async def file_operations(
     else:  # write
         if not confirmation.confirm:
             raise ToolError(f"Kullanıcı '{path}' üzerine yazmayı onaylamadı.")
-        written = await ssh.write_file(path, content)
+        written = await ssh.write_file(
+            path, content, exclusive=confirmation.approved_because_absent
+        )
         result = FileOpResult(operation=operation, path=path, bytes_written=written)
 
     ssh.activity_logger.log_file_operation(
@@ -884,6 +929,7 @@ async def sftp_download(
 
 class UploadConfirmation(BaseModel):
     confirm: bool = Field(description="Overwrite the existing file?")
+    approved_because_absent: SkipJsonSchema[bool] = False
 
 
 async def confirm_upload(
@@ -896,7 +942,7 @@ async def confirm_upload(
         return UploadConfirmation(confirm=True)
     ssh = _ssh(ctx)
     if not await ssh.file_exists(remote_path):
-        return UploadConfirmation(confirm=True)
+        return UploadConfirmation(confirm=True, approved_because_absent=True)
     return Elicit(
         f"'{remote_path}' zaten var ve tamamen değiştirilecek. Onaylıyor musun?",
         UploadConfirmation,
@@ -922,7 +968,12 @@ async def sftp_upload(
         raise ToolError(f"Kullanıcı '{remote_path}' dosyasını değiştirmeyi onaylamadı.")
 
     ssh = _ssh(ctx)
-    size = await ssh.write_file(remote_path, content, append=(mode == "append"))
+    size = await ssh.write_file(
+        remote_path,
+        content,
+        append=(mode == "append"),
+        exclusive=confirmation.approved_because_absent,
+    )
 
     ssh.activity_logger.log_file_operation(
         operation="sftp_upload",
