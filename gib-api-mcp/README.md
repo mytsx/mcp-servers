@@ -1,7 +1,7 @@
 # GIB API MCP Server
 
-[![Node.js](https://img.shields.io/badge/node-18+-blue?logo=node.js&logoColor=white)](https://nodejs.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![Node.js](https://img.shields.io/badge/node-20+-blue?logo=node.js&logoColor=white)](https://nodejs.org)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/gib-api-mcp)](https://www.npmjs.com/package/gib-api-mcp)
 
@@ -12,6 +12,10 @@ GIB (Gelir İdaresi Başkanlığı) gecikme zammı ve gecikme faizi hesaplama MC
 - **Gecikme Zammı** — Kesinleşmiş vergi borcu için aylık+günlük karma hesaplama (AATUHK m.51)
 - **Gecikme Faizi** — İkmalen/resen tarhiyatlarda tam ay esasına göre hesaplama (VUK m.112)
 - **Kendi Worker'ın** — Kendi Cloudflare Worker'ını deploy et, URL'i env var olarak ver
+- **Structured Output** — Sonuç tipli JSON döner (`anaPara`, `gecikmeOrani`, `gecikmeTutari`,
+  `toplamOdenecek`), metni ayrıştırmaya gerek yok
+- **Girdi Doğrulama** — Tarih ve tutar biçimi araç çalışmadan önce kontrol edilir
+- **Prompt** — `gecikme_karsilastir`: aynı borç için zam ve faizi hesaplatıp farkı açıklar
 
 ## Prerequisites
 
@@ -184,6 +188,9 @@ Kesinleşmiş vergi borcu vadesinde ödenmezse uygulanan gecikme zammını hesap
 | `vadeTarihi` | string | Yes | Vade tarihi (YYYYMMDD). Örnek: `"20260101"` |
 | `odemeTarihi` | string | Yes | Ödeme tarihi (YYYYMMDD). Örnek: `"20260301"` |
 
+Dönen alanlar: `tip`, `anaPara`, `vadeTarihi`, `odemeTarihi`, `gecikmeOrani`,
+`gecikmeTutari`, `toplamOdenecek`.
+
 </details>
 
 <details>
@@ -197,7 +204,15 @@ Kesinleşmiş vergi borcu vadesinde ödenmezse uygulanan gecikme zammını hesap
 | `vadeTarihi` | string | Yes | Normal vade tarihi (YYYYMMDD). Örnek: `"20260101"` |
 | `odemeTarihi` | string | Yes | Tahakkuk tarihi (YYYYMMDD). Örnek: `"20260601"` |
 
+Dönen alanlar `calculate_gecikme_zammi` ile aynı.
+
 </details>
+
+## Prompts
+
+| Ad | Açıklama |
+|----|----------|
+| `gecikme_karsilastir` | Aynı borç için zam ve faizi hesaplatır, farkı ve hangisinin uygulanacağını açıklar |
 
 ## Usage Examples
 
@@ -208,6 +223,13 @@ Kesinleşmiş vergi borcu vadesinde ödenmezse uygulanan gecikme zammını hesap
 # Gecikme faizi
 5000 TL'lik ikmalen tarhiyat, normal vade 1 Mart 2026, tahakkuk tarihi 1 Eylül 2026
 ```
+
+## Gereksinimler
+
+Node.js 20+ ve MCP SDK 2.x (`@modelcontextprotocol/server@^2`). `node-fetch` bağımlılığı
+kaldırıldı — Node 20'nin yerleşik `fetch`'i kullanılıyor.
+
+Testler: `npm test` (in-memory transport üzerinden sahte bir GİB worker'ıyla uçtan uca).
 
 ## License
 
