@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-server-ssh"
-version = "1.0.0"
+version = "2.0.0"
 description = "SSH MCP server for remote Linux command execution via Model Context Protocol"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,7 +20,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp[cli]>=2.2,<3",
+    "anyio>=4.5",
     "paramiko>=3.4.0",
     "python-dotenv>=1.0.0",
 ]
