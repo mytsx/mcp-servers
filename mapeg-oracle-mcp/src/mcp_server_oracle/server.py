@@ -679,12 +679,17 @@ class Database:
             # Whatever is left belongs to this block, not the next one: the
             # buffer is the session's, and a later call within the refresh
             # interval would otherwise report these as its own output.
-            discarded = await anyio.to_thread.run_sync(
-                self._drain_dbms_output_blocking, DBMS_OUTPUT_DISCARD_LIMIT
-            )
-            lines.append(
-                f"... (çıktı {max_lines} satırda kesildi; kalan {len(discarded)} satır atıldı)"
-            )
+            # Until it is empty: one more batch would still leave a very long
+            # buffer behind for the next call to report as its own.
+            dropped = 0
+            while True:
+                batch = await anyio.to_thread.run_sync(
+                    self._drain_dbms_output_blocking, DBMS_OUTPUT_DISCARD_LIMIT
+                )
+                dropped += len(batch)
+                if len(batch) < DBMS_OUTPUT_DISCARD_LIMIT:
+                    break
+            lines.append(f"... (çıktı {max_lines} satırda kesildi; kalan {dropped} satır atıldı)")
         return "\n".join(lines)
 
     async def _refresh_dbms_output_owned(self, force: bool = False) -> None:
@@ -696,7 +701,15 @@ class Database:
 
     # -- logging -----------------------------------------------------------
 
-    def log_query(self, tool_name: str, **fields) -> None:
+    async def log_query(self, tool_name: str, **fields) -> None:
+        """Record the call in the query history, off the event loop.
+
+        The history is a SQLite database that may need creating and migrating,
+        so writing it is file I/O and does not belong on the loop.
+        """
+        await anyio.to_thread.run_sync(functools.partial(self._log_query_blocking, tool_name, **fields))
+
+    def _log_query_blocking(self, tool_name: str, **fields) -> None:
         direct_log_query_execution(
             server_type="oracle",
             tool_name=tool_name,
@@ -775,7 +788,7 @@ def _log_exploration(tool_name: str, describe: Callable[..., str]):
             try:
                 result = await fn(*args, **kwargs)
             except ToolError as exc:
-                db.log_query(
+                await db.log_query(
                     tool_name,
                     query_text=summary,
                     execution_time_ms=(time.time() - started) * 1000,
@@ -784,7 +797,7 @@ def _log_exploration(tool_name: str, describe: Callable[..., str]):
                     error_message=str(exc),
                 )
                 raise
-            db.log_query(
+            await db.log_query(
                 tool_name,
                 query_text=summary,
                 execution_time_ms=(time.time() - started) * 1000,
@@ -888,7 +901,10 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
     cleaned = _strip_line_comments(sql)
     upper = cleaned.upper()
     is_select = upper.startswith("SELECT") or upper.startswith("WITH")
-    is_plsql = any(word in upper for word in ("BEGIN", "DECLARE", "CREATE OR REPLACE"))
+    # CALL and EXEC invoke a procedure, which can print just as a block can.
+    is_plsql = statement_keyword(cleaned) in PLSQL_KEYWORDS or any(
+        word in upper for word in ("BEGIN", "DECLARE", "CREATE OR REPLACE")
+    )
 
     effective_sql = sql.strip()
     limit_applied: int | None = None
@@ -909,7 +925,7 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
             rows, columns, affected = await db.fetch(effective_sql)
             dbms_output = ""
     except ToolError as exc:
-        db.log_query(
+        await db.log_query(
             "execute_sql",
             query_text=effective_sql,
             execution_time_ms=(time.time() - started) * 1000,
@@ -930,7 +946,7 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
         dbms_output=dbms_output,
         duration_ms=duration,
     )
-    db.log_query(
+    await db.log_query(
         "execute_sql",
         query_text=effective_sql,
         execution_time_ms=duration,

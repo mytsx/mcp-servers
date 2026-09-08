@@ -100,12 +100,25 @@ function commandSegments(command) {
     .filter(Boolean);
 }
 
-/** Why this command needs confirming, or null when it is ordinary. */
+/** Shell expansions, which decide on the host what the command actually is. */
+const EXPANSION = /\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/;
+
+/**
+ * Why this command needs confirming, or null when it is ordinary.
+ *
+ * A command containing an expansion is always confirmed. Removing it catches an
+ * expansion that evaluates to nothing — `r$()m` is `rm` — but not one that
+ * evaluates to something: `$(echo rm) -rf /` deletes, and no reading of this
+ * text can say so.
+ */
 export function destructiveReason(command) {
   for (const segment of commandSegments(command)) {
     for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
       if (pattern.test(segment)) return reason;
     }
+  }
+  if (EXPANSION.test(command)) {
+    return 'kabuk genişletmesi içeriyor; ne çalıştıracağı önceden bilinemiyor';
   }
   return null;
 }

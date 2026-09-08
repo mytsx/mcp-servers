@@ -650,11 +650,20 @@ def confirm_reason(command: str) -> str | None:
     Matched against the command as written: the patterns carry their own flags,
     because `chmod -R` is not the same option as `chmod -r`. Each segment of a
     shell line is judged on its own.
+
+    A command containing a shell expansion is always confirmed. Removing the
+    expansion catches the case where it evaluates to nothing — `r$()m` is `rm` —
+    but not the case where it evaluates to something: `$(echo rm) -rf /` runs a
+    deletion this text cannot be read to predict. What such a command does is
+    decided on the remote host, so it goes to the user rather than being guessed
+    at.
     """
     for segment in command_segments(command):
         for pattern, reason in CONFIRM_PATTERNS:
             if pattern.search(segment):
                 return reason
+    if _EXPANSION.search(command):
+        return "kabuk genişletmesi içeriyor; ne çalıştıracağı önceden bilinemiyor"
     return None
 
 

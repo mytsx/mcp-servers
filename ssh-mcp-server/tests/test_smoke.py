@@ -191,7 +191,10 @@ def _client(server_module, confirm=True, asked=None):
         # they must vanish before the rules are applied too.
         ("r$()m -rf --no-preserve-root /", True, True),
         ("r${x}m -rf /tmp/build", False, True),
-        ("echo $HOME", False, False),
+        # An expansion decides on the host what the command is, so it is always
+        # confirmed — `$(echo rm) -rf /` cannot be read to reveal a deletion.
+        ("$(echo rm) -rf /", False, True),
+        ("echo $HOME", False, True),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

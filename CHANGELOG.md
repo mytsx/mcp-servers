@@ -57,6 +57,15 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **ssh-mcp-server** and **asger-terminal-mcp**: a command containing a shell expansion is
+  always confirmed. Removing the expansion catches one that evaluates to nothing —
+  `r$()m` is `rm` — but `$(echo rm) -rf /` is decided on the host, and no reading of the
+  text can say what it will run.
+- **mapeg-oracle-mcp**: `CALL` and `EXEC` collect DBMS_OUTPUT like a block does, and a
+  truncated buffer is drained until it is actually empty.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: the query-history write happens on a
+  worker thread; it is a SQLite database that may need creating and migrating.
+- **agent-chat**: the presence tools are not idempotent — each call rewrites `last_seen`.
 - **ssh-mcp-server**: shell expansions are removed before the safety rules run. `r$()m -rf /`
   and `r${x}m -rf /` both invoke `rm`, and neither matched anything.
 - **ssh-mcp-server**: a PID is not an identity. The process shown in the confirmation can

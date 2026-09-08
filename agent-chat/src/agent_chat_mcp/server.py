@@ -425,12 +425,12 @@ RoomArg = Annotated[
 
 # Presence-tracking tools update the caller's `last_seen`, so they are not
 # read-only in the strict sense the annotation means — hence read_only_hint=False
-# on tools that only look like readers. Calling one twice is the same as calling
-# it once, so they are idempotent.
+# on tools that only look like readers. Nor are they idempotent: each call
+# rewrites last_seen, so a retry after a lost response is another write.
 _PRESENCE_TOOL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
-    idempotent_hint=True,
+    idempotent_hint=False,
     open_world_hint=False,
 )
 

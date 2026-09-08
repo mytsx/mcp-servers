@@ -385,8 +385,12 @@ def test_mutating_tools_are_not_marked_idempotent(mcp_server):
             tools = {t.name: t for t in (await client.list_tools()).tools}
             for name in ["send_message", "join_room", "leave_room"]:
                 assert tools[name].annotations.idempotent_hint is False, name
+            # The presence tools write last_seen on every call, so a retry is
+            # another write; only the tools that touch nothing stay idempotent.
             for name in ["read_messages", "list_agents", "get_last_message_id"]:
-                assert tools[name].annotations.idempotent_hint is True, name
+                assert tools[name].annotations.idempotent_hint is False, name
+            for name in ["read_all_messages", "list_rooms"]:
+                assert tools[name].annotations.read_only_hint is True, name
 
     anyio.run(run)
 

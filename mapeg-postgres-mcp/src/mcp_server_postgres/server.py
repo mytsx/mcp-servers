@@ -4,6 +4,7 @@ PostgreSQL MCP Server
 Query, explore and analyze a PostgreSQL database over MCP.
 """
 
+import functools
 import json
 import logging
 import os
@@ -469,7 +470,15 @@ class Database:
         )
         return str(size or "?")
 
-    def log_query(self, tool_name: str, **fields) -> None:
+    async def log_query(self, tool_name: str, **fields) -> None:
+        """Record the call in the query history, off the event loop.
+
+        The history is a SQLite database that may need creating and migrating,
+        so writing it is file I/O and does not belong on the loop.
+        """
+        await anyio.to_thread.run_sync(functools.partial(self._log_query_blocking, tool_name, **fields))
+
+    def _log_query_blocking(self, tool_name: str, **fields) -> None:
         direct_log_query_execution(
             server_type="postgresql",
             tool_name=tool_name,
@@ -601,7 +610,7 @@ async def _run_sql(
     try:
         rows, columns, affected = await db.fetch(effective_sql)
     except ToolError as exc:
-        db.log_query(
+        await db.log_query(
             tool_name,
             query_text=effective_sql,
             execution_time_ms=(time.time() - started) * 1000,
@@ -622,7 +631,7 @@ async def _run_sql(
         duration_ms=duration,
     )
 
-    db.log_query(
+    await db.log_query(
         tool_name,
         query_text=effective_sql,
         execution_time_ms=duration,
@@ -689,7 +698,7 @@ async def natural_language_query(
                 db, " ".join(sql.split()), 50, tool_name="natural_language_query", user_query=query
             )
 
-    db.log_query(
+    await db.log_query(
         "natural_language_query",
         query_text="NO_PATTERN_MATCH",
         execution_time_ms=0,
