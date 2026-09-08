@@ -1,12 +1,8 @@
 """
 PostgreSQL MCP Server
-Natural language queries to PostgreSQL database via MCP protocol
+Query, explore and analyze a PostgreSQL database via the MCP protocol
 """
 
-__version__ = "1.0.0"
-__author__ = "Your Name"
+__version__ = "2.0.0"
+__author__ = "mytsx"
 __license__ = "MIT"
-
-from .server import PostgreSQLMCPServer
-
-__all__ = ["PostgreSQLMCPServer"]

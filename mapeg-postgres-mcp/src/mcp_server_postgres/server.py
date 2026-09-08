@@ -1,795 +1,825 @@
 #!/usr/bin/env python3
 """
-PostgreSQL MCP Server for Claude Desktop
-Natural language queries to PostgreSQL database
+PostgreSQL MCP Server
+Query, explore and analyze a PostgreSQL database over MCP.
 """
 
-import asyncio
-import os
+import json
 import logging
+import os
 import time
-from typing import Any, List, Dict
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import (
-    Resource,
-    Tool,
-    TextContent,
-    ImageContent,
-    EmbeddedResource,
-    LoggingLevel
-)
-from dotenv import load_dotenv
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import date, datetime, time as dtime
+from decimal import Decimal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
+import anyio
+import psycopg2
+from dotenv import load_dotenv
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context, Elicit, Resolve
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.types import ToolAnnotations
+from psycopg2.extras import RealDictCursor
+from pydantic import BaseModel, Field
+
+from . import __version__
 from .query_logger import direct_log_query_execution, get_query_history
 
-# Load environment variables
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class PostgreSQLMCPServer:
-    # Keywords that indicate a write/modify operation
-    WRITE_KEYWORDS = frozenset([
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
-        "TRUNCATE", "MERGE", "GRANT", "REVOKE",
-    ])
+DEFAULT_ROW_LIMIT = 100
 
-    def __init__(self):
-        self.server = Server("postgresql-mcp-server")
+# Statements that change the database. Anything starting with one of these
+# is a write, and is refused in read-only mode and confirmed otherwise.
+WRITE_KEYWORDS = frozenset(
+    ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "MERGE", "GRANT", "REVOKE"]
+)
+
+# Writes that cannot be undone once they run.
+IRREVERSIBLE_KEYWORDS = frozenset(["DROP", "TRUNCATE", "DELETE"])
+
+
+# ---------------------------------------------------------------------------
+# Wire models
+# ---------------------------------------------------------------------------
+
+ExplainFormat = Literal["text", "json", "yaml"]
+HistoryStatus = Literal["success", "error"]
+
+
+class QueryResult(BaseModel):
+    """The outcome of one SQL statement."""
+
+    sql: str = Field(description="The statement as it was actually run, LIMIT included.")
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(
+        default_factory=list, description="Result rows. Empty for statements that return nothing."
+    )
+    row_count: int = Field(description="Rows returned, or rows affected for a write.")
+    limit_applied: int | None = Field(
+        default=None, description="The LIMIT this server added, if the query had none."
+    )
+    duration_ms: float
+
+
+class ColumnInfo(BaseModel):
+    name: str
+    data_type: str
+    nullable: bool
+    default: str | None = None
+    max_length: int | None = None
+    position: int
+
+
+class TableDescription(BaseModel):
+    schema_name: str
+    table_name: str
+    columns: list[ColumnInfo]
+    row_count: int
+    size: str = Field(description="Total on-disk size, human readable.")
+
+
+class TableRef(BaseModel):
+    schema_name: str
+    table_name: str
+    owner: str = ""
+    has_indexes: bool = False
+    has_triggers: bool = False
+
+
+class DatabaseInfo(BaseModel):
+    database: str
+    user: str
+    version: str
+    tables_per_schema: dict[str, int]
+
+
+class ExplainPlan(BaseModel):
+    sql: str
+    analyzed: bool = Field(description="True when the query was actually run to get real timings.")
+    format: ExplainFormat
+    plan: str
+
+
+class HistoryEntry(BaseModel):
+    timestamp: str
+    tool_name: str
+    query_text: str
+    execution_time_ms: float
+    row_count: int
+    status: str
+    error_message: str = ""
+    user_query: str = ""
+
+
+class QueryHistory(BaseModel):
+    db_identifier: str
+    workspace_path: str
+    entries: list[HistoryEntry]
+
+
+class SchemaContext(BaseModel):
+    """The tables and columns a question could be answered from."""
+
+    question: str
+    tables: dict[str, list[str]] = Field(
+        description="Table name → its columns, as 'name (type)' strings."
+    )
+    guidance: str
+
+
+# ---------------------------------------------------------------------------
+# Database access
+# ---------------------------------------------------------------------------
+
+
+def _jsonable(value: Any) -> Any:
+    """Make a psycopg2 value safe to put in a JSON result."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date, dtime)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (bytes, memoryview)):
+        return f"<{len(bytes(value))} bytes>"
+    return str(value)
+
+
+def statement_keyword(sql: str) -> str:
+    """The leading keyword of a statement, with leading comments stripped."""
+    cleaned = sql.strip()
+    while cleaned.startswith("--") or cleaned.startswith("/*"):
+        if cleaned.startswith("--"):
+            cleaned = cleaned.split("\n", 1)[-1].strip()
+        else:
+            end = cleaned.find("*/")
+            if end == -1:
+                break
+            cleaned = cleaned[end + 2 :].strip()
+    parts = cleaned.split()
+    return parts[0].upper() if parts else ""
+
+
+def is_write_query(sql: str) -> bool:
+    return statement_keyword(sql) in WRITE_KEYWORDS
+
+
+class Database:
+    """The PostgreSQL connection, with every blocking call on a worker thread."""
+
+    def __init__(self) -> None:
         self.connection = None
         self.read_only = os.getenv("READ_ONLY", "").lower() in ("true", "1", "yes")
-        self.db_identifier = f"{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', '')}"
+        self.db_identifier = (
+            f"{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}"
+            f"/{os.getenv('DB_NAME', '')}"
+        )
         self.workspace_path = os.getcwd()
         if self.read_only:
             logger.info("Read-only mode enabled - write queries will be blocked")
-        self.setup_handlers()
-        
-    def setup_handlers(self):
-        """Setup MCP server handlers"""
-        
-        @self.server.list_resources()
-        async def list_resources() -> List[Resource]:
-            """List available database resources"""
-            return [
-                Resource(
-                    uri="postgresql://tables",
-                    name="Database Tables",
-                    description="List all tables in the PostgreSQL database",
-                    mimeType="application/json"
-                ),
-                Resource(
-                    uri="postgresql://schema",
-                    name="Database Schema",
-                    description="Get database schema information",
-                    mimeType="application/json"
-                ),
-                Resource(
-                    uri="postgresql://stats",
-                    name="Database Statistics",
-                    description="Get database statistics and info",
-                    mimeType="application/json"
-                )
-            ]
-        
-        @self.server.read_resource()
-        async def read_resource(uri: str) -> str:
-            """Read database resource"""
-            if not self.connection:
-                await self.connect_to_postgresql()
-                
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            
-            if uri == "postgresql://tables":
-                cursor.execute("""
-                    SELECT 
-                        schemaname,
-                        tablename,
-                        tableowner,
-                        hasindexes,
-                        hasrules,
-                        hastriggers
-                    FROM pg_tables 
-                    WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
-                    ORDER BY schemaname, tablename
-                """)
-                tables = cursor.fetchall()
-                result = "Database Tables:\n\n"
-                for table in tables:
-                    result += f"• {table['schemaname']}.{table['tablename']} (Owner: {table['tableowner']})\n"
-                    if table['hasindexes']:
-                        result += "  - Has indexes\n"
-                    if table['hastriggers']:
-                        result += "  - Has triggers\n"
-                cursor.close()
-                return result
-                
-            elif uri == "postgresql://schema":
-                # Get detailed schema information
-                cursor.execute("""
-                    SELECT 
-                        t.table_schema,
-                        t.table_name,
-                        c.column_name,
-                        c.data_type,
-                        c.is_nullable,
-                        c.column_default,
-                        c.ordinal_position
-                    FROM information_schema.tables t
-                    JOIN information_schema.columns c ON t.table_name = c.table_name 
-                        AND t.table_schema = c.table_schema
-                    WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
-                    ORDER BY t.table_schema, t.table_name, c.ordinal_position
-                    LIMIT 500
-                """)
-                
-                columns = cursor.fetchall()
-                schema_info = "Database Schema:\n\n"
-                current_table = None
-                
-                for col in columns:
-                    table_full_name = f"{col['table_schema']}.{col['table_name']}"
-                    if current_table != table_full_name:
-                        current_table = table_full_name
-                        schema_info += f"\n📋 Table: {table_full_name}\n"
-                        schema_info += "-" * 50 + "\n"
-                    
-                    nullable = "NULL" if col['is_nullable'] == 'YES' else "NOT NULL"
-                    default = f" DEFAULT {col['column_default']}" if col['column_default'] else ""
-                    schema_info += f"  {col['column_name']}: {col['data_type']} {nullable}{default}\n"
-                
-                cursor.close()
-                return schema_info
-            
-            elif uri == "postgresql://stats":
-                # Database statistics
-                cursor.execute("""
-                    SELECT 
-                        current_database() as database_name,
-                        current_user as current_user,
-                        version() as postgresql_version
-                """)
-                info = cursor.fetchone()
-                
-                cursor.execute("""
-                    SELECT 
-                        schemaname,
-                        COUNT(*) as table_count
-                    FROM pg_tables 
-                    WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
-                    GROUP BY schemaname
-                    ORDER BY table_count DESC
-                """)
-                schema_stats = cursor.fetchall()
-                
-                result = f"Database Information:\n\n"
-                result += f"• Database: {info['database_name']}\n"
-                result += f"• Current User: {info['current_user']}\n"
-                result += f"• PostgreSQL Version: {info['postgresql_version']}\n\n"
-                result += "Schema Statistics:\n"
-                for stat in schema_stats:
-                    result += f"• {stat['schemaname']}: {stat['table_count']} tables\n"
-                
-                cursor.close()
-                return result
-            
-            cursor.close()
-            return "Resource not found"
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available tools"""
-            return [
-                Tool(
-                    name="natural_language_query",
-                    description="Execute natural language queries on PostgreSQL database",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Natural language query in Turkish or English"
-                            }
-                        },
-                        "required": ["query"]
-                    }
-                ),
-                Tool(
-                    name="execute_sql",
-                    description="Execute direct SQL query on PostgreSQL database",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "sql": {
-                                "type": "string",
-                                "description": "SQL query to execute"
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of rows to return (default: 100)",
-                                "default": 100
-                            }
-                        },
-                        "required": ["sql"]
-                    }
-                ),
-                Tool(
-                    name="describe_table",
-                    description="Get detailed information about a specific table",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "table_name": {
-                                "type": "string",
-                                "description": "Name of the table to describe (format: schema.table or just table)"
-                            }
-                        },
-                        "required": ["table_name"]
-                    }
-                ),
-                Tool(
-                    name="smart_query",
-                    description="AI-powered smart query with context understanding",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "Your question about the data in natural language"
-                            }
-                        },
-                        "required": ["question"]
-                    }
-                ),
-                Tool(
-                    name="explain_query",
-                    description="Show the execution plan for a SQL query using EXPLAIN",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "sql": {
-                                "type": "string",
-                                "description": "SQL query to explain"
-                            },
-                            "analyze": {
-                                "type": "boolean",
-                                "description": "Actually execute the query to get real timing (default: false - safe/estimated only)",
-                                "default": False
-                            },
-                            "format": {
-                                "type": "string",
-                                "enum": ["text", "json", "yaml"],
-                                "description": "Output format (default: text)",
-                                "default": "text"
-                            },
-                            "buffers": {
-                                "type": "boolean",
-                                "description": "Include buffer usage information (only with analyze=true)",
-                                "default": False
-                            }
-                        },
-                        "required": ["sql"]
-                    }
-                ),
-                Tool(
-                    name="get_query_history",
-                    description="Get recent query history for this database connection. Shows past queries, execution times, statuses and errors. Useful for reviewing what was run before.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of recent queries to return (default: 20)",
-                                "default": 20
-                            },
-                            "status": {
-                                "type": "string",
-                                "enum": ["success", "error"],
-                                "description": "Filter by status (optional - omit for all)"
-                            },
-                            "tool_name": {
-                                "type": "string",
-                                "description": "Filter by tool name, e.g. 'execute_sql', 'natural_language_query' (optional)"
-                            }
-                        }
-                    }
-                )
-            ]
 
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
-            """Handle tool calls"""
-            if name == "get_query_history":
-                return self.handle_get_query_history(arguments)
+    def _connect_blocking(self) -> None:
+        self.connection = psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432"),
+            database=os.getenv("DB_NAME", "docsmapeg"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", "postgres"),
+        )
+        self.connection.set_session(autocommit=True)
 
-            if not self.connection:
-                await self.connect_to_postgresql()
+    async def connect(self) -> None:
+        try:
+            await anyio.to_thread.run_sync(self._connect_blocking)
+        except Exception as exc:
+            logger.error("PostgreSQL bağlantısı kurulamadı: %s", exc)
+            raise ToolError(f"PostgreSQL bağlantısı kurulamadı ({self.db_identifier}): {exc}") from exc
+        logger.info("PostgreSQL bağlantısı kuruldu: %s", self.db_identifier)
 
+    def close(self) -> None:
+        if self.connection:
             try:
-                if name == "natural_language_query":
-                    return await self.handle_natural_language_query(arguments["query"])
+                self.connection.close()
+            except Exception as exc:
+                logger.debug("Bağlantı kapatılırken hata: %s", exc)
+            finally:
+                self.connection = None
 
-                elif name == "execute_sql":
-                    return await self.handle_sql_query(arguments["sql"], arguments.get("limit", 100))
+    async def ensure(self) -> None:
+        if self.connection is None or self.connection.closed:
+            await self.connect()
 
-                elif name == "describe_table":
-                    return await self.handle_describe_table(arguments["table_name"])
+    def _fetch_blocking(self, sql: str, params: tuple | None) -> tuple[list[dict], list[str], int]:
+        assert self.connection is not None
+        with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(sql, params)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            rows = [dict(row) for row in cursor.fetchall()] if cursor.description else []
+            affected = cursor.rowcount
+        return rows, columns, affected
 
-                elif name == "smart_query":
-                    return await self.handle_smart_query(arguments["question"])
-
-                elif name == "explain_query":
-                    return await self.handle_explain_query(
-                        arguments["sql"],
-                        arguments.get("analyze", False),
-                        arguments.get("format", "text"),
-                        arguments.get("buffers", False)
-                    )
-
-                else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
-                    
-            except Exception as e:
-                logger.error(f"Error in tool call: {e}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    def _is_write_query(self, sql: str) -> bool:
-        """Check if a SQL query is a write/modify operation"""
-        cleaned = sql.strip()
-        # Strip leading comments
-        while cleaned.startswith("--") or cleaned.startswith("/*"):
-            if cleaned.startswith("--"):
-                cleaned = cleaned.split("\n", 1)[-1].strip()
-            elif cleaned.startswith("/*"):
-                end = cleaned.find("*/")
-                cleaned = cleaned[end + 2:].strip() if end != -1 else cleaned
-        first_word = cleaned.split()[0].upper() if cleaned.split() else ""
-        return first_word in self.WRITE_KEYWORDS
-
-    async def connect_to_postgresql(self):
-        """Connect to PostgreSQL database"""
+    async def fetch(self, sql: str, params: tuple | None = None) -> tuple[list[dict], list[str], int]:
+        """Run a statement and return (rows, columns, rowcount)."""
+        await self.ensure()
         try:
-            host = os.getenv("DB_HOST", "localhost")
-            port = os.getenv("DB_PORT", "5432")
-            database = os.getenv("DB_NAME", "docsmapeg")
-            user = os.getenv("DB_USER", "postgres")
-            password = os.getenv("DB_PASSWORD", "postgres")
-            
-            self.connection = psycopg2.connect(
-                host=host,
-                port=port,
-                database=database,
-                user=user,
-                password=password
-            )
-            self.connection.set_session(autocommit=True)
-            logger.info(f"Successfully connected to PostgreSQL database: {database}")
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to PostgreSQL: {e}")
-            raise
-    
-    async def handle_natural_language_query(self, query: str) -> List[TextContent]:
-        """Convert natural language to SQL and execute"""
-        start_time = time.time()
-        query_lower = query.lower()
-        generated_sql = ""
-        status = "success"
-        error_message = ""
-        
-        try:
-            # Enhanced pattern matching for common queries
-            if any(word in query_lower for word in ["tablo", "table", "liste", "list", "göster", "show"]):
-                if any(word in query_lower for word in ["liste", "list", "göster", "show", "all"]):
-                    generated_sql = """
-                        SELECT schemaname, tablename, tableowner 
-                        FROM pg_tables 
-                        WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
-                        ORDER BY schemaname, tablename
-                    """
-                    result = await self.handle_sql_query(generated_sql.strip(), 50)
-                    
-                    # Log the natural language query
-                    execution_time = (time.time() - start_time) * 1000
-                    direct_log_query_execution(
-                        server_type="postgresql",
-                        tool_name="natural_language_query",
-                        query_text=generated_sql.strip(),
-                        execution_time_ms=execution_time,
-                        status="success",
-                        row_count=0,  # Will be logged by handle_sql_query too
-                        error_message="",
-                        user_query=query,
-                        db_identifier=self.db_identifier,
-                        workspace_path=self.workspace_path,
-                    )
-                    return result
+            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+        except psycopg2.Error as exc:
+            raise ToolError(f"SQL hatası: {str(exc).strip()}") from exc
 
-            if any(word in query_lower for word in ["kullanıcı", "user", "kullanıcılar", "users"]):
-                generated_sql = """
-                    SELECT usename as username, usesuper as is_superuser, usecreatedb as can_create_db
-                    FROM pg_user 
-                    ORDER BY usename
-                """
-                result = await self.handle_sql_query(generated_sql.strip(), 20)
-                
-                execution_time = (time.time() - start_time) * 1000
-                direct_log_query_execution(
-                    server_type="postgresql",
-                    tool_name="natural_language_query",
-                    query_text=generated_sql.strip(),
-                    execution_time_ms=execution_time,
-                    status="success",
-                    row_count=0,
-                    error_message="",
-                    user_query=query,
-                    db_identifier=self.db_identifier,
-                    workspace_path=self.workspace_path,
-                )
-                return result
+    async def scalar(self, sql: str, params: tuple | None = None) -> Any:
+        rows, _, _ = await self.fetch(sql, params)
+        if not rows:
+            return None
+        return next(iter(rows[0].values()))
 
-            if any(word in query_lower for word in ["şema", "schema", "schemas"]):
-                generated_sql = """
-                    SELECT schema_name, schema_owner 
-                    FROM information_schema.schemata 
-                    WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
-                    ORDER BY schema_name
-                """
-                result = await self.handle_sql_query(generated_sql.strip(), 20)
-                
-                execution_time = (time.time() - start_time) * 1000
-                direct_log_query_execution(
-                    server_type="postgresql",
-                    tool_name="natural_language_query",
-                    query_text=generated_sql.strip(),
-                    execution_time_ms=execution_time,
-                    status="success",
-                    row_count=0,
-                    error_message="",
-                    user_query=query,
-                    db_identifier=self.db_identifier,
-                    workspace_path=self.workspace_path,
-                )
-                return result
-
-            if any(word in query_lower for word in ["istatistik", "statistics", "stats", "bilgi", "info"]):
-                generated_sql = """
-                    SELECT 
-                        current_database() as database,
-                        current_user as user,
-                        version() as postgresql_version
-                """
-                result = await self.handle_sql_query(generated_sql.strip(), 1)
-                
-                execution_time = (time.time() - start_time) * 1000
-                direct_log_query_execution(
-                    server_type="postgresql",
-                    tool_name="natural_language_query",
-                    query_text=generated_sql.strip(),
-                    execution_time_ms=execution_time,
-                    status="success",
-                    row_count=0,
-                    error_message="",
-                    user_query=query,
-                    db_identifier=self.db_identifier,
-                    workspace_path=self.workspace_path,
-                )
-                return result
-
-            # If no pattern matches, return helpful message
-            execution_time = (time.time() - start_time) * 1000
-            direct_log_query_execution(
-                server_type="postgresql",
-                tool_name="natural_language_query",
-                query_text="NO_PATTERN_MATCH",
-                execution_time_ms=execution_time,
-                status="success",
-                row_count=0,
-                error_message="",
-                user_query=query,
-                db_identifier=self.db_identifier,
-                workspace_path=self.workspace_path,
-            )
-            
-            return [TextContent(
-                type="text", 
-                text=f"""🤖 Doğal dil sorgusu: "{query}"
-
-Anlayabildiğim komutlar:
-• "tabloları listele" / "show tables" 
-• "kullanıcıları göster" / "show users"
-• "şemaları listele" / "show schemas"
-• "veritabanı bilgilerini göster" / "show database info"
-
-Gelişmiş sorgular için:
-• 'execute_sql' aracını kullanın
-• 'smart_query' aracıyla AI destekli sorgular yapın
-
-Örnek SQL sorguları:
-• SELECT * FROM pg_tables WHERE schemaname = 'public'
-• SELECT table_name, column_name, data_type FROM information_schema.columns
-"""
-            )]
-        except Exception as e:
-            status = "error"
-            error_message = str(e)
-            execution_time = (time.time() - start_time) * 1000
-            direct_log_query_execution(
-                server_type="postgresql",
-                tool_name="natural_language_query",
-                query_text=generated_sql or "PATTERN_MATCHING_ERROR",
-                execution_time_ms=execution_time,
-                status=status,
-                row_count=0,
-                error_message=error_message,
-                user_query=query,
-                db_identifier=self.db_identifier,
-                workspace_path=self.workspace_path,
-            )
-            return [TextContent(type="text", text=f"❌ Error processing natural language query: {str(e)}")]
-    
-    async def handle_sql_query(self, sql: str, limit: int = 100) -> List[TextContent]:
-        """Execute SQL query"""
-        # Read-only guard
-        if self.read_only and self._is_write_query(sql):
-            return [TextContent(type="text", text="❌ Read-only mode is enabled. Write operations (INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, MERGE, GRANT, REVOKE) are blocked. Set READ_ONLY=false to allow write operations.")]
-
-        start_time = time.time()
-        cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-        row_count = 0
-        status = "success"
-        error_message = ""
-        result_text = ""
-        
-        try:
-            # Add LIMIT for SELECT queries if not already present
-            if sql.strip().upper().startswith("SELECT") and "LIMIT" not in sql.upper():
-                sql += f" LIMIT {limit}"
-            
-            cursor.execute(sql)
-            
-            if sql.strip().upper().startswith("SELECT"):
-                rows = cursor.fetchall()
-                row_count = len(rows)
-                
-                if not rows:
-                    result_text = "Sorgu sonuç döndürmedi."
-                else:
-                    # Format results
-                    result = f"🔍 SQL Query: {sql}\n\n"
-                    result += f"📊 Results ({len(rows)} rows):\n"
-                    result += "=" * 60 + "\n"
-                    
-                    # Get column names
-                    columns = [desc[0] for desc in cursor.description]
-                    
-                    # Add column headers
-                    result += " | ".join(columns) + "\n"
-                    result += "-" * 60 + "\n"
-                    
-                    # Add data rows
-                    for row in rows:
-                        row_data = []
-                        for col in columns:
-                            val = row[col] if row[col] is not None else "NULL"
-                            row_data.append(str(val))
-                        result += " | ".join(row_data) + "\n"
-                    
-                    result_text = result
-                
-                return [TextContent(type="text", text=result_text)]
-            else:
-                # For non-SELECT queries
-                result_text = f"✅ Query executed successfully: {sql}"
-                return [TextContent(type="text", text=result_text)]
-                
-        except Exception as e:
-            status = "error"
-            error_message = str(e)
-            result_text = f"❌ SQL Error: {str(e)}"
-            return [TextContent(type="text", text=result_text)]
-        finally:
-            # Log the query execution
-            execution_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-            # Direct logging to avoid async queue truncation
-            direct_log_query_execution(
-                server_type="postgresql",
-                tool_name="execute_sql",
-                query_text=sql,
-                execution_time_ms=execution_time,
-                status=status,
-                row_count=row_count,
-                error_message=error_message,
-                response_text=result_text,
-                db_identifier=self.db_identifier,
-                workspace_path=self.workspace_path,
-            )
-            cursor.close()
-    
-    async def handle_describe_table(self, table_name: str) -> List[TextContent]:
-        """Describe table structure"""
-        cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-        
-        try:
-            # Handle schema.table format
-            if '.' in table_name:
-                schema, table = table_name.split('.', 1)
-            else:
-                schema = 'public'
-                table = table_name
-            
-            # Get table columns
-            cursor.execute("""
-                SELECT 
-                    column_name,
-                    data_type,
-                    character_maximum_length,
-                    is_nullable,
-                    column_default,
-                    ordinal_position
-                FROM information_schema.columns 
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
-            """, (schema, table))
-            
-            columns = cursor.fetchall()
-            
-            if not columns:
-                return [TextContent(type="text", text=f"❌ Table '{schema}.{table}' not found")]
-            
-            result = f"📋 Table: {schema}.{table}\n"
-            result += "=" * 60 + "\n\n"
-            
-            for col in columns:
-                nullable = "NULL" if col['is_nullable'] == 'YES' else "NOT NULL"
-                length = f"({col['character_maximum_length']})" if col['character_maximum_length'] else ""
-                default = f" DEFAULT {col['column_default']}" if col['column_default'] else ""
-                result += f"• {col['column_name']}: {col['data_type']}{length} {nullable}{default}\n"
-            
-            # Get row count
-            cursor.execute(f'SELECT COUNT(*) as count FROM "{schema}"."{table}"')
-            row_count = cursor.fetchone()['count']
-            result += f"\n📊 Total rows: {row_count:,}"
-            
-            # Get table size
-            cursor.execute("""
-                SELECT pg_size_pretty(pg_total_relation_size(%s)) as size
-            """, (f'"{schema}"."{table}"',))
-            size_info = cursor.fetchone()
-            result += f"\n💾 Table size: {size_info['size']}"
-            
-            return [TextContent(type="text", text=result)]
-            
-        except Exception as e:
-            return [TextContent(type="text", text=f"❌ Error describing table: {str(e)}")]
-        finally:
-            cursor.close()
-    
-    async def handle_smart_query(self, question: str) -> List[TextContent]:
-        """AI-powered smart query"""
-        try:
-            # First, get schema information to provide context
-            cursor = self.connection.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("""
-                SELECT table_name, column_name, data_type
-                FROM information_schema.columns 
-                WHERE table_schema = 'public'
-                ORDER BY table_name, ordinal_position
-                LIMIT 100
-            """)
-            schema_info = cursor.fetchall()
-            cursor.close()
-            
-            # Build schema context
-            schema_context = "Available tables and columns:\n"
-            current_table = None
-            for item in schema_info:
-                if current_table != item['table_name']:
-                    current_table = item['table_name']
-                    schema_context += f"\n{item['table_name']}:\n"
-                schema_context += f"  - {item['column_name']} ({item['data_type']})\n"
-            
-            # For now, provide helpful guidance
-            # In a full implementation, you would use the Anthropic API here
-            return [TextContent(
-                type="text",
-                text=f"""🤖 Smart Query for: "{question}"
-
-Şu anda basit pattern matching kullanıyorum. Tam AI özelliği için:
-
-1. Schema analizi:
-{schema_context[:500]}...
-
-2. Önerilen yaklaşım:
-• Sorunuzu daha spesifik hale getirin
-• 'execute_sql' ile doğrudan SQL yazın
-• 'describe_table' ile tablo yapısını inceleyin
-
-Örnek sorgular:
-• "users tablosundaki tüm kayıtları göster"
-• "en son eklenen 10 kaydı listele"
-• "boş olmayan email adreslerini say"
-"""
-            )]
-            
-        except Exception as e:
-            return [TextContent(type="text", text=f"❌ Smart query error: {str(e)}")]
-
-    async def handle_explain_query(self, sql: str, analyze: bool = False, fmt: str = "text", buffers: bool = False) -> List[TextContent]:
-        """Show execution plan for a SQL query"""
-        cursor = self.connection.cursor()
-        try:
-            parts = ["EXPLAIN"]
-            options = []
-            if analyze:
-                options.append("ANALYZE true")
-            if buffers and analyze:
-                options.append("BUFFERS true")
-            if fmt != "text":
-                options.append(f"FORMAT {fmt}")
-            if options:
-                parts.append(f"({', '.join(options)})")
-            parts.append(sql)
-            explain_sql = " ".join(parts)
-
-            cursor.execute(explain_sql)
-            rows = cursor.fetchall()
-
-            plan_output = "\n".join(row[0] if isinstance(row[0], str) else str(row[0]) for row in rows)
-            result = f"📋 Execution Plan{' (ANALYZE)' if analyze else ''}:\n"
-            result += "=" * 60 + "\n"
-            result += plan_output
-            return [TextContent(type="text", text=result)]
-        except Exception as e:
-            return [TextContent(type="text", text=f"❌ EXPLAIN error: {str(e)}")]
-        finally:
-            cursor.close()
-
-    def handle_get_query_history(self, arguments: Dict[str, Any]) -> List[TextContent]:
-        """Return recent query history for this db+workspace"""
-        logs = get_query_history(
+    def log_query(self, tool_name: str, **fields) -> None:
+        direct_log_query_execution(
+            server_type="postgresql",
+            tool_name=tool_name,
             db_identifier=self.db_identifier,
             workspace_path=self.workspace_path,
-            limit=arguments.get("limit", 20),
-            status=arguments.get("status", ""),
-            tool_name=arguments.get("tool_name", ""),
+            **fields,
         )
 
-        if not logs:
-            return [TextContent(type="text", text="No query history found for this database/workspace.")]
 
-        result = f"Query History ({len(logs)} entries):\n"
-        result += f"DB: {self.db_identifier} | Workspace: {self.workspace_path}\n"
-        result += "=" * 70 + "\n\n"
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
 
-        for log in logs:
-            status_icon = "OK" if log["status"] == "success" else "ERR"
-            time_str = log["timestamp"][:19].replace("T", " ")
-            result += f"[{status_icon}] {time_str} | {log['tool_name']} | {log['execution_time_ms']:.0f}ms | {log['row_count']} rows\n"
-            query_preview = log["query_text"][:120].replace("\n", " ")
-            result += f"     {query_preview}\n"
-            if log["error_message"]:
-                result += f"     Error: {log['error_message'][:100]}\n"
-            if log["user_query"]:
-                result += f"     User: {log['user_query'][:100]}\n"
-            result += "\n"
 
-        return [TextContent(type="text", text=result)]
+@dataclass
+class AppContext:
+    db: Database
 
-async def main():
-    """Main function to run the MCP server"""
-    postgresql_server = PostgreSQLMCPServer()
-    
-    async with stdio_server() as (read_stream, write_stream):
-        await postgresql_server.server.run(
-            read_stream,
-            write_stream,
-            postgresql_server.server.create_initialization_options()
+
+# Resources cannot read the lifespan context in v2, so they go through this.
+_app: AppContext | None = None
+
+
+@asynccontextmanager
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
+    global _app
+    db = Database()
+    _app = AppContext(db=db)
+    try:
+        yield _app
+    finally:
+        db.close()
+        _app = None
+
+
+mcp = MCPServer("postgresql-mcp-server", version=__version__, lifespan=app_lifespan)
+
+_READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+
+
+def _db(ctx: Context[AppContext]) -> Database:
+    return ctx.request_context.lifespan_context.db
+
+
+def _split_table(table_name: str) -> tuple[str, str]:
+    if "." in table_name:
+        schema, table = table_name.split(".", 1)
+        return schema, table
+    return "public", table_name
+
+
+# -- execute_sql -------------------------------------------------------------
+
+
+class WriteConfirmation(BaseModel):
+    """The user's answer to a write-query question."""
+
+    confirm: bool = Field(description="Run this statement against the database?")
+
+
+async def confirm_write(ctx: Context[AppContext], sql: str = "") -> WriteConfirmation | Elicit[WriteConfirmation]:
+    """Ask before running anything that changes the database."""
+    db = _db(ctx)
+    if db.read_only or not is_write_query(sql):
+        return WriteConfirmation(confirm=True)  # refused below, or harmless
+
+    keyword = statement_keyword(sql)
+    warning = (
+        " Bu işlem geri alınamaz." if keyword in IRREVERSIBLE_KEYWORDS else ""
+    )
+    return Elicit(
+        f"Bu {keyword} ifadesi '{db.db_identifier}' veritabanını değiştirecek.{warning}\n\n"
+        f"    {sql.strip()}\n\nÇalıştırılsın mı?",
+        WriteConfirmation,
+    )
+
+
+@mcp.tool(
+    title="SQL çalıştır",
+    description="Execute a SQL statement. SELECTs get a LIMIT if they have none; writes are "
+    "confirmed with the user first, and refused outright in read-only mode.",
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
+    ),
+)
+async def execute_sql(
+    sql: Annotated[str, Field(min_length=1, description="SQL statement to execute.")],
+    ctx: Context[AppContext],
+    confirmation: Annotated[WriteConfirmation, Resolve(confirm_write)],
+    limit: Annotated[
+        int,
+        Field(ge=1, le=10000, description="Row limit added to a SELECT that has no LIMIT."),
+    ] = DEFAULT_ROW_LIMIT,
+) -> QueryResult:
+    db = _db(ctx)
+
+    if db.read_only and is_write_query(sql):
+        raise ToolError(
+            "Read-only mod açık: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, "
+            "MERGE, GRANT ve REVOKE engellendi. Yazma için READ_ONLY=false yap."
         )
+    if not confirmation.confirm:
+        raise ToolError("Kullanıcı ifadeyi onaylamadı; veritabanında hiçbir şey değişmedi.")
+
+    return await _run_sql(db, sql, limit, tool_name="execute_sql")
+
+
+async def _run_sql(
+    db: Database, sql: str, limit: int, *, tool_name: str, user_query: str = ""
+) -> QueryResult:
+    """Run one statement, apply the row limit, and record it in the query log."""
+    effective_sql = sql.strip()
+    limit_applied: int | None = None
+    if statement_keyword(effective_sql) == "SELECT" and "LIMIT" not in effective_sql.upper():
+        effective_sql = f"{effective_sql} LIMIT {limit}"
+        limit_applied = limit
+
+    started = time.time()
+    try:
+        rows, columns, affected = await db.fetch(effective_sql)
+    except ToolError as exc:
+        db.log_query(
+            tool_name,
+            query_text=effective_sql,
+            execution_time_ms=(time.time() - started) * 1000,
+            status="error",
+            row_count=0,
+            error_message=str(exc),
+            user_query=user_query,
+        )
+        raise
+
+    duration = (time.time() - started) * 1000
+    result = QueryResult(
+        sql=effective_sql,
+        columns=columns,
+        rows=[{k: _jsonable(v) for k, v in row.items()} for row in rows],
+        row_count=len(rows) if columns else max(affected, 0),
+        limit_applied=limit_applied,
+        duration_ms=duration,
+    )
+
+    db.log_query(
+        tool_name,
+        query_text=effective_sql,
+        execution_time_ms=duration,
+        status="success",
+        row_count=result.row_count,
+        error_message="",
+        user_query=user_query,
+    )
+    return result
+
+
+# -- natural_language_query --------------------------------------------------
+
+# The phrases this server can answer without a model writing SQL. Anything else
+# is better served by execute_sql.
+_NL_PATTERNS: list[tuple[tuple[str, ...], str, str]] = [
+    (
+        ("tablo", "table", "liste", "list", "göster", "show"),
+        "tabloları listele",
+        """SELECT schemaname, tablename, tableowner
+           FROM pg_tables
+           WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
+           ORDER BY schemaname, tablename""",
+    ),
+    (
+        ("kullanıcı", "user", "kullanıcılar", "users"),
+        "kullanıcıları listele",
+        """SELECT usename AS username, usesuper AS is_superuser, usecreatedb AS can_create_db
+           FROM pg_user ORDER BY usename""",
+    ),
+    (
+        ("şema", "schema", "schemas"),
+        "şemaları listele",
+        """SELECT schema_name, schema_owner
+           FROM information_schema.schemata
+           WHERE schema_name NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
+           ORDER BY schema_name""",
+    ),
+    (
+        ("istatistik", "statistics", "stats", "bilgi", "info"),
+        "veritabanı bilgisi",
+        """SELECT current_database() AS database, current_user AS "user",
+                  version() AS postgresql_version""",
+    ),
+]
+
+
+@mcp.tool(
+    title="Doğal dil sorgusu",
+    description="Answer a handful of fixed questions about the database (tables, users, "
+    "schemas, database info) without writing SQL. Anything else: use execute_sql.",
+    annotations=_READ_ONLY,
+)
+async def natural_language_query(
+    query: Annotated[str, Field(min_length=1, description="Question in Turkish or English.")],
+    ctx: Context[AppContext],
+) -> QueryResult:
+    db = _db(ctx)
+    lowered = query.lower()
+
+    for keywords, _, sql in _NL_PATTERNS:
+        if any(word in lowered for word in keywords):
+            return await _run_sql(
+                db, " ".join(sql.split()), 50, tool_name="natural_language_query", user_query=query
+            )
+
+    db.log_query(
+        "natural_language_query",
+        query_text="NO_PATTERN_MATCH",
+        execution_time_ms=0,
+        status="error",
+        row_count=0,
+        error_message="no pattern matched",
+        user_query=query,
+    )
+    understood = ", ".join(label for _, label, _ in _NL_PATTERNS)
+    raise ToolError(
+        f"Bu soruyu eşleştiremedim. Bu araç yalnızca şunları biliyor: {understood}. "
+        "Başka her şey için SQL'i kendin yaz ve execute_sql ile çalıştır."
+    )
+
+
+# -- describe_table ----------------------------------------------------------
+
+
+@mcp.tool(
+    title="Tabloyu tanımla",
+    description="Get a table's columns, row count and on-disk size.",
+    annotations=_READ_ONLY,
+)
+async def describe_table(
+    table_name: Annotated[
+        str, Field(min_length=1, description="Table as 'schema.table', or just the table name.")
+    ],
+    ctx: Context[AppContext],
+) -> TableDescription:
+    db = _db(ctx)
+    schema, table = _split_table(table_name)
+
+    await ctx.report_progress(0, 3, "kolonlar")
+    columns = await _fetch_columns(db, schema, table)
+    if not columns:
+        raise ToolError(f"'{schema}.{table}' diye bir tablo yok.")
+
+    await ctx.report_progress(1, 3, "satır sayısı")
+    row_count = await db.scalar(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+
+    await ctx.report_progress(2, 3, "boyut")
+    size = await db.scalar(
+        "SELECT pg_size_pretty(pg_total_relation_size(%s))", (f'"{schema}"."{table}"',)
+    )
+
+    await ctx.report_progress(3, 3, "tamamlandı")
+    return TableDescription(
+        schema_name=schema,
+        table_name=table,
+        columns=columns,
+        row_count=int(row_count or 0),
+        size=str(size or "?"),
+    )
+
+
+async def _fetch_columns(db: Database, schema: str, table: str) -> list[ColumnInfo]:
+    rows, _, _ = await db.fetch(
+        """SELECT column_name, data_type, character_maximum_length, is_nullable,
+                  column_default, ordinal_position
+           FROM information_schema.columns
+           WHERE table_schema = %s AND table_name = %s
+           ORDER BY ordinal_position""",
+        (schema, table),
+    )
+    return [
+        ColumnInfo(
+            name=row["column_name"],
+            data_type=row["data_type"],
+            nullable=row["is_nullable"] == "YES",
+            default=row["column_default"],
+            max_length=row["character_maximum_length"],
+            position=row["ordinal_position"],
+        )
+        for row in rows
+    ]
+
+
+# -- smart_query -------------------------------------------------------------
+
+
+@mcp.tool(
+    title="Şema bağlamı getir",
+    description="Return the public schema's tables and columns as context for answering a "
+    "question. It does not write or run SQL — read the context, then use execute_sql.",
+    annotations=_READ_ONLY,
+)
+async def smart_query(
+    question: Annotated[str, Field(min_length=1, description="Your question about the data.")],
+    ctx: Context[AppContext],
+) -> SchemaContext:
+    db = _db(ctx)
+    rows, _, _ = await db.fetch(
+        """SELECT table_name, column_name, data_type
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+           ORDER BY table_name, ordinal_position
+           LIMIT 500"""
+    )
+
+    tables: dict[str, list[str]] = {}
+    for row in rows:
+        tables.setdefault(row["table_name"], []).append(
+            f"{row['column_name']} ({row['data_type']})"
+        )
+
+    return SchemaContext(
+        question=question,
+        tables=tables,
+        guidance=(
+            "Bu şemayı kullanarak soruyu cevaplayan SQL'i yaz ve execute_sql ile çalıştır. "
+            "Bir tablonun satır sayısı, boyutu ve varsayılan değerleri için describe_table kullan."
+        ),
+    )
+
+
+# -- explain_query -----------------------------------------------------------
+
+
+@mcp.tool(
+    title="Sorgu planını göster",
+    description="Show a query's execution plan with EXPLAIN. With analyze=true the query is "
+    "actually run, so do not analyze a statement that writes.",
+    annotations=ToolAnnotations(
+        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    ),
+)
+async def explain_query(
+    sql: Annotated[str, Field(min_length=1, description="SQL query to explain.")],
+    ctx: Context[AppContext],
+    analyze: Annotated[
+        bool,
+        Field(
+            description="Run the query to get real timings. False gives the planner's estimate "
+            "without touching any data."
+        ),
+    ] = False,
+    format: Annotated[ExplainFormat, Field(description="Plan output format.")] = "text",
+    buffers: Annotated[
+        bool, Field(description="Include buffer usage. Only meaningful with analyze=true.")
+    ] = False,
+) -> ExplainPlan:
+    db = _db(ctx)
+
+    if analyze and is_write_query(sql):
+        raise ToolError(
+            "EXPLAIN ANALYZE sorguyu gerçekten çalıştırır; yazan bir ifadeyle kullanılamaz. "
+            "analyze=false ile plan tahminini alabilirsin."
+        )
+
+    options = []
+    if analyze:
+        options.append("ANALYZE true")
+    if buffers and analyze:
+        options.append("BUFFERS true")
+    if format != "text":
+        options.append(f"FORMAT {format}")
+
+    prefix = f"EXPLAIN ({', '.join(options)})" if options else "EXPLAIN"
+    rows, _, _ = await db.fetch(f"{prefix} {sql}")
+
+    plan = "\n".join(str(next(iter(row.values()))) for row in rows)
+    return ExplainPlan(sql=sql, analyzed=analyze, format=format, plan=plan)
+
+
+# -- get_query_history -------------------------------------------------------
+
+
+@mcp.tool(
+    name="get_query_history",
+    title="Sorgu geçmişi",
+    description="Recent queries run against this database from this workspace, with timings, "
+    "statuses and errors.",
+    annotations=_READ_ONLY,
+)
+def get_query_history_tool(
+    ctx: Context[AppContext],
+    limit: Annotated[int, Field(ge=1, le=500, description="How many entries to return.")] = 20,
+    status: Annotated[
+        HistoryStatus | None, Field(description="Only successes, or only failures.")
+    ] = None,
+    tool_name: Annotated[
+        str, Field(description="Only entries from this tool, e.g. 'execute_sql'.")
+    ] = "",
+) -> QueryHistory:
+    db = _db(ctx)
+    logs = get_query_history(
+        db_identifier=db.db_identifier,
+        workspace_path=db.workspace_path,
+        limit=limit,
+        status=status or "",
+        tool_name=tool_name,
+    )
+    return QueryHistory(
+        db_identifier=db.db_identifier,
+        workspace_path=db.workspace_path,
+        entries=[
+            HistoryEntry(
+                timestamp=log["timestamp"],
+                tool_name=log["tool_name"],
+                query_text=log["query_text"],
+                execution_time_ms=log["execution_time_ms"],
+                row_count=log["row_count"],
+                status=log["status"],
+                error_message=log.get("error_message") or "",
+                user_query=log.get("user_query") or "",
+            )
+            for log in logs
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resources & prompts
+# ---------------------------------------------------------------------------
+
+
+def _require_app() -> AppContext:
+    if _app is None:
+        raise ResourceError("Sunucu henüz hazır değil.")
+    return _app
+
+
+@mcp.resource(
+    "postgresql://tables",
+    name="Database Tables",
+    description="Veritabanındaki tüm tablolar, sahibi ve indeks/tetikleyici durumu.",
+    mime_type="application/json",
+)
+async def tables_resource() -> str:
+    db = _require_app().db
+    rows, _, _ = await db.fetch(
+        """SELECT schemaname, tablename, tableowner, hasindexes, hastriggers
+           FROM pg_tables
+           WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
+           ORDER BY schemaname, tablename"""
+    )
+    refs = [
+        TableRef(
+            schema_name=row["schemaname"],
+            table_name=row["tablename"],
+            owner=row["tableowner"],
+            has_indexes=row["hasindexes"],
+            has_triggers=row["hastriggers"],
+        )
+        for row in rows
+    ]
+    return _dump_list(refs)
+
+
+@mcp.resource(
+    "postgresql://schema",
+    name="Database Schema",
+    description="Tüm şemaların tablo ve kolon yapısı.",
+    mime_type="application/json",
+)
+async def schema_resource() -> str:
+    db = _require_app().db
+    rows, _, _ = await db.fetch(
+        """SELECT t.table_schema, t.table_name, c.column_name, c.data_type,
+                  c.is_nullable, c.column_default, c.ordinal_position
+           FROM information_schema.tables t
+           JOIN information_schema.columns c
+             ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+           WHERE t.table_schema NOT IN ('information_schema', 'pg_catalog')
+           ORDER BY t.table_schema, t.table_name, c.ordinal_position
+           LIMIT 500"""
+    )
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        key = f"{row['table_schema']}.{row['table_name']}"
+        grouped.setdefault(key, []).append(
+            {
+                "name": row["column_name"],
+                "data_type": row["data_type"],
+                "nullable": row["is_nullable"] == "YES",
+                "default": row["column_default"],
+                "position": row["ordinal_position"],
+            }
+        )
+    return json.dumps(grouped, ensure_ascii=False, indent=2)
+
+
+@mcp.resource(
+    "postgresql://stats",
+    name="Database Statistics",
+    description="Veritabanı adı, kullanıcı, sürüm ve şema başına tablo sayısı.",
+    mime_type="application/json",
+)
+async def stats_resource() -> str:
+    db = _require_app().db
+    info_rows, _, _ = await db.fetch(
+        """SELECT current_database() AS database, current_user AS "user",
+                  version() AS version"""
+    )
+    count_rows, _, _ = await db.fetch(
+        """SELECT schemaname, COUNT(*) AS table_count
+           FROM pg_tables
+           WHERE schemaname NOT IN ('information_schema', 'pg_catalog')
+           GROUP BY schemaname ORDER BY table_count DESC"""
+    )
+    info = info_rows[0] if info_rows else {"database": "", "user": "", "version": ""}
+    return DatabaseInfo(
+        database=info["database"],
+        user=info["user"],
+        version=info["version"],
+        tables_per_schema={row["schemaname"]: row["table_count"] for row in count_rows},
+    ).model_dump_json(indent=2)
+
+
+@mcp.resource(
+    "postgresql://table/{schema}/{table}",
+    name="Tablo yapısı",
+    description="Bir tablonun kolonları, satır sayısı ve disk boyutu.",
+    mime_type="application/json",
+)
+async def table_resource(schema: str, table: str) -> str:
+    db = _require_app().db
+    columns = await _fetch_columns(db, schema, table)
+    if not columns:
+        raise ResourceError(f"'{schema}.{table}' diye bir tablo yok.")
+    row_count = await db.scalar(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+    size = await db.scalar(
+        "SELECT pg_size_pretty(pg_total_relation_size(%s))", (f'"{schema}"."{table}"',)
+    )
+    return TableDescription(
+        schema_name=schema,
+        table_name=table,
+        columns=columns,
+        row_count=int(row_count or 0),
+        size=str(size or "?"),
+    ).model_dump_json(indent=2)
+
+
+def _dump_list(models: list[BaseModel]) -> str:
+    return json.dumps([m.model_dump() for m in models], ensure_ascii=False, indent=2)
+
+
+@mcp.prompt(title="Tabloyu analiz et")
+def analyze_table(table_name: str) -> str:
+    """Look a table over: shape, data quality, and what it is for."""
+    return (
+        f"'{table_name}' tablosunu analiz et:\n\n"
+        f"1. `describe_table('{table_name}')` ile kolonları, satır sayısını ve boyutunu al.\n"
+        "2. Birkaç örnek satır çek (`SELECT * ... LIMIT 10`) ve verinin neye benzediğine bak.\n"
+        "3. Veri kalitesini yokla: null oranı yüksek kolonlar, hep aynı değeri taşıyan kolonlar, "
+        "beklenmedik tipler, kullanılmayan alanlar.\n"
+        "4. Tablonun ne işe yaradığını ve hangi tablolarla ilişkili göründüğünü yaz.\n"
+        "5. Gördüğün sorunları ve iyileştirme önerilerini (indeks, tip, kısıt) sırala."
+    )
+
+
+@mcp.prompt(title="Sorguyu optimize et")
+def optimize_query(sql: str) -> str:
+    """Find out why a query is slow and what to do about it."""
+    return (
+        "Aşağıdaki sorguyu optimize et:\n\n"
+        f"```sql\n{sql}\n```\n\n"
+        "1. `explain_query` ile planı al (yazma yoksa analyze=true ile gerçek süreleri de al).\n"
+        "2. Planda en pahalı adımı bul: seq scan, nested loop, sort, hash join.\n"
+        "3. İlgili tabloları `describe_table` ile incele; mevcut indeksleri kontrol et.\n"
+        "4. Somut öneri ver: hangi kolona hangi indeks, hangi join sırası, hangi yeniden yazım.\n"
+        "5. Önerdiğin haliyle planı tekrar al ve farkı göster."
+    )
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    mcp.run()
