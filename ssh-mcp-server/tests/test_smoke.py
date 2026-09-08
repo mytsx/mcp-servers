@@ -61,7 +61,7 @@ class FakeHost:
     def _write(self, path: str, content: str, append: bool) -> int:
         existing = self.files.get(path, b"").decode() if append else ""
         self.files[path] = (existing + content).encode()
-        return len(self.files[path])
+        return len(content.encode("utf-8"))  # what this call added
 
     def _exists(self, path: str) -> bool:
         return path in self.files
@@ -70,6 +70,21 @@ class FakeHost:
 @pytest.fixture()
 def host():
     return FakeHost()
+
+
+@pytest.fixture()
+def raw_module(monkeypatch):
+    """The server module with nothing patched, for testing its own internals."""
+    monkeypatch.setenv("SSH_HOST", "testhost")
+    monkeypatch.setenv("SSH_USER", "ops")
+    monkeypatch.setenv("SSH_PORT", "2222")
+    monkeypatch.setenv("SSH_KEEPALIVE_INTERVAL", "9999")
+    for module in [m for m in sys.modules if m.startswith("mcp_server_ssh")]:
+        del sys.modules[module]
+
+    import mcp_server_ssh.server as module
+
+    return module
 
 
 @pytest.fixture()
@@ -108,6 +123,15 @@ def _client(server_module, confirm=True, asked=None):
         # confirmed rather than refused.
         ("rm -rf /var/tmp/build", False, True),
         ("rm -rf ./build", False, True),
+        # GNU long options are the same command; matching only "-rf" let these
+        # run unconfirmed.
+        ("rm --recursive --force /", True, True),
+        ("rm -r -f /", True, True),
+        ("rm --recursive --force /var", True, True),
+        ("rm --recursive --force /var/tmp/build", False, True),
+        ("rm --recursive ./build", False, True),
+        # ...but reading the manual is not destructive.
+        ("rm --help", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),
@@ -253,5 +277,74 @@ def test_status_resources_are_listed(server_module):
             assert body.startswith("Disk Usage — ops@testhost:2222")
 
             assert [p.name for p in (await client.list_prompts()).prompts] == ["diagnose_server"]
+
+    anyio.run(run)
+
+
+class _StubSFTP:
+    """The two SFTP calls _write_file_blocking makes, over an in-memory file."""
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self.files = files
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def open(self, path: str, mode: str):
+        stub = self
+
+        class _Handle:
+            def __enter__(self_inner):
+                if "r" in mode and path not in stub.files:
+                    raise FileNotFoundError(path)
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                return False
+
+            def read(self_inner) -> bytes:
+                return stub.files[path]
+
+            def write(self_inner, data: str) -> None:
+                stub.files[path] = data.encode("utf-8")
+
+        return _Handle()
+
+
+def test_write_file_blocking_reports_only_what_it_added(raw_module):
+    """size_bytes is what this call added, not the size of the whole file.
+
+    This drives the real _write_file_blocking, not the fake host, because the
+    inflated count came from that function rewriting the whole file in append
+    mode and then measuring the buffer it wrote.
+    """
+    files = {"/var/log/app.log": b"x" * 1000}
+    connection = raw_module.SSHConnection(raw_module.SSHConfig.from_env())
+    connection.client = type("_Client", (), {"open_sftp": lambda self: _StubSFTP(files)})()
+
+    appended = connection._write_file_blocking("/var/log/app.log", "yz", append=True)
+    assert appended == 2
+    assert len(files["/var/log/app.log"]) == 1002
+
+    replaced = connection._write_file_blocking("/var/log/app.log", "abc", append=False)
+    assert replaced == 3
+    assert files["/var/log/app.log"] == b"abc"
+
+
+def test_append_reports_only_the_appended_bytes(server_module, host):
+    """The same contract, seen through the tool."""
+    host.files["/var/log/app.log"] = b"x" * 1000
+
+    async def run():
+        async with _client(server_module) as client:
+            result = await client.call_tool(
+                "sftp_upload",
+                {"remote_path": "/var/log/app.log", "content": "yz", "mode": "append"},
+            )
+            assert result.structured_content["size_bytes"] == 2
+            assert len(host.files["/var/log/app.log"]) == 1002
 
     anyio.run(run)

@@ -57,6 +57,17 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp**: a `numeric` wider than an IEEE-754 float was converted to `float`
+  and silently rounded on its way into the result. Decimals now travel as strings.
+- **gib-api-mcp**: dates are checked against the calendar, not just for eight digits, so
+  `20260231` and `20261301` no longer reach the tax API.
+- **ssh-mcp-server** and **asger-terminal-mcp**: the destructive-command patterns only
+  matched short flags, so `rm --recursive --force /` ran without confirmation — and, on the
+  SSH server, without being blocked either. Both spellings are recognised now.
+- **ssh-mcp-server**: `sftp_upload` in append mode reported the size of the whole rewritten
+  file rather than the bytes it appended.
+- **agent-chat**: `list_rooms` and the `chat://rooms` resource are advertised read-only but
+  pruned stale agents from disk as a side effect of being read. They no longer write.
 - **n8n-chatbot-mcp**: TLS certificate verification is on by default. It was disabled
   unconditionally (`verify=False`), which silently accepted any certificate. An n8n behind
   a self-signed certificate now needs `N8N_CHATBOT_VERIFY_TLS=false`, and the error names

@@ -16,10 +16,26 @@ if (!BASE_URL) {
   process.exit(1);
 }
 
+/** Whether an 8-digit string is a date that exists (20260231 is not). */
+function isRealDate(value) {
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(4, 6));
+  const day = Number(value.slice(6, 8));
+  if (year < 1900 || month < 1 || month > 12 || day < 1) return false;
+
+  const asDate = new Date(Date.UTC(year, month - 1, day));
+  return (
+    asDate.getUTCFullYear() === year &&
+    asDate.getUTCMonth() === month - 1 &&
+    asDate.getUTCDate() === day
+  );
+}
+
 const dateField = (description) =>
   z
     .string()
     .regex(/^\d{8}$/, 'Tarih YYYYAAGG biçiminde 8 haneli olmalı, örnek: "20260101"')
+    .refine(isRealDate, 'Takvimde olmayan tarih. Örnek geçerli değer: "20260101"')
     .describe(description);
 
 const inputSchema = (vadeDescription, odemeDescription) =>

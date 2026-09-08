@@ -30,8 +30,12 @@ const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), 'asg
 
 // Commands that destroy something on the remote host. These are confirmed with
 // the user before they are typed into the terminal.
+// `rm -rf`, `rm -r -f`, and the GNU long forms `rm --recursive --force`. Only
+// matching a single dash let `rm --recursive --force /path` through unasked.
+const RM_DESTRUCTIVE = /\brm\s+(-[a-z]*[rf]|--(recursive|force|dir)\b)/i;
+
 const DESTRUCTIVE_PATTERNS = [
-  [/\brm\s+-[a-z]*[rf]/i, 'dosya/dizin siliyor'],
+  [RM_DESTRUCTIVE, 'dosya/dizin siliyor'],
   [/\b(shutdown|reboot|halt|poweroff)\b|\binit\s+[06]\b/i, 'sunucuyu kapatıyor/yeniden başlatıyor'],
   [/\bmkfs\b|\bdd\s+.*of=\/dev\//i, 'diski biçimlendiriyor'],
   [/\b(kill\s+-9|killall|pkill)\b/i, 'süreçleri zorla sonlandırıyor'],
@@ -66,7 +70,7 @@ function requirePage() {
 }
 
 /** Why this command needs confirming, or null when it is ordinary. */
-function destructiveReason(command) {
+export function destructiveReason(command) {
   for (const [pattern, reason] of DESTRUCTIVE_PATTERNS) {
     if (pattern.test(command)) return reason;
   }

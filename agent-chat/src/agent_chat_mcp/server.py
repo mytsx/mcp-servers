@@ -247,18 +247,31 @@ class ChatStore:
 
         return self._update_json(self.room_dir(room) / "messages.json", [], add)
 
-    def live_agents(self, room: str) -> dict[str, dict]:
-        """Agents seen recently enough to count as present, persisting the cleanup."""
-        agents = self.agents(room)
+    @staticmethod
+    def _fresh(agents: dict[str, dict]) -> dict[str, dict]:
+        """The subset of `agents` seen recently enough to count as present."""
         now = time.time()
-        live = {
+        return {
             name: info
             for name, info in agents.items()
             if now - info.get("last_seen", 0) < STALE_AFTER_SECONDS
         }
+
+    def live_agents(self, room: str) -> dict[str, dict]:
+        """Present agents, persisting the cleanup. Writes; not for read-only paths."""
+        agents = self.agents(room)
+        live = self._fresh(agents)
         if len(live) != len(agents):
             self.save_agents(live, room)
         return live
+
+    def peek_live_agents(self, room: str) -> dict[str, dict]:
+        """Present agents, without writing the pruned roster back.
+
+        `list_rooms` and the chat://rooms resource are advertised as read-only,
+        so they must not drop a stale agent as a side effect of being read.
+        """
+        return self._fresh(self.agents(room))
 
     def rooms(self) -> list[RoomInfo]:
         if not self.chat_dir.exists():
@@ -266,7 +279,7 @@ class ChatStore:
         return [
             RoomInfo(
                 name=item.name,
-                agent_count=len(self.live_agents(item.name)),
+                agent_count=len(self.peek_live_agents(item.name)),
                 message_count=len(self.messages(item.name)),
                 is_default=item.name == self.default_room,
             )

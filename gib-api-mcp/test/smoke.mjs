@@ -63,6 +63,24 @@ const bad = await client.callTool({
 console.log('BAD DATE isError:', bad.isError, '|', bad.content[0].text.slice(0, 70));
 assert.equal(bad.isError, true);
 
+// Eight digits is not enough: the date has to exist.
+for (const bad of ['20260231', '20261301', '00000000', '20260100']) {
+  const result = await client.callTool({
+    name: 'calculate_gecikme_zammi',
+    arguments: { odenecekMiktar: '1000.00', vadeTarihi: bad, odemeTarihi: '20260301' },
+  });
+  assert.equal(result.isError, true, `${bad} kabul edilmemeliydi`);
+}
+console.log('IMPOSSIBLE DATES: rejected');
+
+// A leap day that does exist must still go through.
+const leap = await client.callTool({
+  name: 'calculate_gecikme_zammi',
+  arguments: { odenecekMiktar: '1000.00', vadeTarihi: '20240229', odemeTarihi: '20240301' },
+});
+assert.ok(!leap.isError, '20240229 geçerli bir tarih');
+console.log('LEAP DAY: accepted');
+
 const { prompts } = await client.listPrompts();
 console.log('PROMPTS:', prompts.map((p) => p.name).join(', '));
 assert.equal(prompts.length, 1);

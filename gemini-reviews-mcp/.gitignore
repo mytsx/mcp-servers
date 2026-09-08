@@ -364,6 +364,10 @@ dist
 # Test files
 test_*.py
 !test_raw_output.py
+# The committed test suite lives in tests/ and must not be hidden by the rule
+# above. Kept narrow so __pycache__ stays ignored.
+!tests/
+!tests/*.py
 demo_*.py
 
 # Logs

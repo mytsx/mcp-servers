@@ -135,7 +135,9 @@ def test_select_returns_typed_rows(mcp_server):
 
             first = content["rows"][0]
             assert first["AD"] == "Ali"
-            assert first["BAKIYE"] == 1200.5
+            # oracledb hands NUMBER back as a float, so this is a float here;
+            # a Decimal would travel as a string instead of being rounded.
+            assert float(first["BAKIYE"]) == 1200.5
             assert first["KAYIT_TARIHI"].startswith("20")  # DATE became ISO-8601
 
     anyio.run(run)

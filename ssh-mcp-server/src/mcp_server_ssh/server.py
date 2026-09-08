@@ -67,11 +67,15 @@ RETRY_DELAY_SECONDS = 1
 
 # Commands that are never run, at any confirmation. These destroy the host
 # rather than something on it.
+# The flags of an `rm`, in any spelling: `-rf`, `-r -f`, or the GNU long forms.
+# Matching only a single dash let `rm --recursive --force /` slip through.
+_RM_FLAGS = r"(?:(?:-[a-zA-Z]+|--[a-z-]+)\s+)*"
+
 BLOCKED_PATTERNS = [
     # `rm -rf /` and `rm -rf /*`, but not `rm -rf /var/tmp/build` — that one is
     # legitimate and goes through the confirmation path instead.
-    r"\brm\s+-[a-z]*\s+/\s*\*?\s*(--no-preserve-root\s*)?$",
-    r"\brm\s+-[a-z]*\s+/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr|var)(/\*)?(\s|$)",
+    rf"\brm\s+{_RM_FLAGS}/\s*\*?\s*(--no-preserve-root\s*)?$",
+    rf"\brm\s+{_RM_FLAGS}/(bin|boot|dev|etc|lib|lib64|proc|root|sbin|sys|usr|var)(/\*)?(\s|$)",
     r"\bformat\b",
     r"\bmkfs\b",
     r"\bdd\s+.*of=/dev/",
@@ -83,7 +87,7 @@ BLOCKED_PATTERNS = [
 
 # Commands that are legitimate but destructive: the user is asked first.
 CONFIRM_PATTERNS = [
-    (r"\brm\s+-[a-z]*[rf]", "dosya/dizin siliyor"),
+    (r"\brm\s+(-[a-z]*[rf]|--(recursive|force|dir)\b)", "dosya/dizin siliyor"),
     (r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+[06]\b", "sunucuyu kapatıyor/yeniden başlatıyor"),
     (r"\bkill\s+-9\b|\bkillall\b|\bpkill\b", "süreçleri zorla sonlandırıyor"),
     (r"\btruncate\b|>\s*/", "dosya içeriğini siliyor"),
@@ -410,7 +414,15 @@ class SSHConnection:
             return f.read()
 
     def _write_file_blocking(self, remote_path: str, content: str, append: bool) -> int:
+        """Write the file and return the number of bytes *this call* added.
+
+        In append mode the whole file is rewritten, so the buffer that goes to
+        the remote host is not the same thing as what the caller supplied.
+        Reporting the buffer's length would call a one-byte append a 100 MB one.
+        """
         assert self.client is not None
+        written = len(content.encode("utf-8"))
+        payload = content
         with self.client.open_sftp() as sftp:
             if append:
                 try:
@@ -418,10 +430,10 @@ class SSHConnection:
                         existing = f.read().decode("utf-8", errors="replace")
                 except FileNotFoundError:
                     existing = ""
-                content = existing + content
+                payload = existing + content
             with sftp.open(remote_path, "w") as f:
-                f.write(content)
-        return len(content.encode("utf-8"))
+                f.write(payload)
+        return written
 
     def _file_exists_blocking(self, remote_path: str) -> bool:
         assert self.client is not None

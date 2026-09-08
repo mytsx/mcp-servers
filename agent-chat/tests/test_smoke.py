@@ -155,6 +155,33 @@ def test_unknown_room_history_fails(mcp_server):
     anyio.run(run)
 
 
+def test_listing_rooms_does_not_prune_agents(mcp_server, tmp_path, monkeypatch):
+    """list_rooms is advertised read-only, so it must not rewrite agents.json."""
+    import agent_chat_mcp.server as server_module
+
+    async def run():
+        async with Client(mcp_server) as client:
+            await client.call_tool("join_room", {"agent_name": "backend"})
+
+            # Age the agent past the staleness cutoff.
+            agents_file = tmp_path / "default" / "agents.json"
+            agents = json.loads(agents_file.read_text())
+            agents["backend"]["last_seen"] = 0
+            agents_file.write_text(json.dumps(agents))
+            before = agents_file.read_text()
+
+            listed = await client.call_tool("list_rooms", {})
+            # The stale agent is not counted as present...
+            assert listed.structured_content["rooms"][0]["agent_count"] == 0
+            # ...but the roster on disk is untouched.
+            assert agents_file.read_text() == before
+            assert "backend" in json.loads(agents_file.read_text())
+
+    anyio.run(run)
+
+    assert server_module.STALE_AFTER_SECONDS > 0
+
+
 def _append_from_worker(chat_dir: str, agent: str, count: int) -> None:
     """Append messages from a separate process, using its own ChatStore."""
     import importlib

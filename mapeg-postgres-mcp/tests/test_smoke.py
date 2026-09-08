@@ -102,9 +102,9 @@ def test_select_returns_typed_rows(mcp_server):
 
             first = content["rows"][0]
             assert first["ad"] == "Ali"
-            # numeric comes back as a float and timestamptz as an ISO-8601 string,
-            # so the result survives JSON.
-            assert first["bakiye"] == 1200.5
+            # NUMERIC travels as a string so nothing is rounded on the way out,
+            # and timestamptz as ISO-8601, so the row survives JSON intact.
+            assert first["bakiye"] == "1200.50"
             assert first["kayit_tarihi"].startswith("20")
 
     anyio.run(run)
@@ -142,6 +142,20 @@ def test_confirmed_write_applies(mcp_server, database):
     with database.cursor() as cursor:
         cursor.execute("SELECT bakiye FROM mcp_test_musteriler WHERE id = 2")
         assert float(cursor.fetchone()[0]) == 1.0
+
+
+def test_wide_numerics_are_not_rounded(mcp_server):
+    """A NUMERIC wider than a float must arrive unchanged, not silently rounded."""
+    wide = "12345678901234567890.12"
+
+    async def run():
+        async with _client(mcp_server) as client:
+            result = await client.call_tool(
+                "execute_sql", {"sql": f"SELECT {wide}::numeric AS büyük"}
+            )
+            assert result.structured_content["rows"][0]["büyük"] == wide
+
+    anyio.run(run)
 
 
 def test_sql_errors_are_tool_errors(mcp_server):

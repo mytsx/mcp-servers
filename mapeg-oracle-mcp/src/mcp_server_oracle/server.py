@@ -246,7 +246,11 @@ def _jsonable(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Decimal):
-        return float(value)
+        # A NUMERIC wider than an IEEE-754 float would be silently rounded on
+        # the way out, so it travels as a string. This is a tool for inspecting
+        # what is actually in the database; a quietly corrupted number is worse
+        # than one the caller has to parse.
+        return str(value)
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, oracledb.LOB):
