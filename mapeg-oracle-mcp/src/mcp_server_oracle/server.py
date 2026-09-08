@@ -39,7 +39,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_ROW_LIMIT = 100
 DBMS_OUTPUT_BUFFER_BYTES = 100_000_000
 DBMS_OUTPUT_MAX_LINES = 1000
+# How much of an over-long buffer is consumed and thrown away so it cannot
+# surface in a later call's output.
+DBMS_OUTPUT_DISCARD_LIMIT = 100_000
 DBMS_OUTPUT_CHECK_INTERVAL = 60
+
+# How much of a CLOB is read into a result. A query can return many of them, and
+# the whole point of a value this size is that it does not belong in a tool
+# result; the reader is told when it was cut.
+MAX_CLOB_CHARS = 100_000
 
 WRITE_KEYWORDS = frozenset(
     ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "TRUNCATE", "MERGE", "GRANT", "REVOKE"]
@@ -261,7 +269,11 @@ def _jsonable(value: Any) -> Any:
         # cost memory for nothing.
         if value.type in (oracledb.DB_TYPE_BLOB, oracledb.DB_TYPE_RAW):
             return f"<{value.size()} bytes>"
-        return _jsonable(value.read())
+        size = value.size()
+        text = value.read(1, MAX_CLOB_CHARS)
+        if size > MAX_CLOB_CHARS:
+            return f"{text}\n... (CLOB {size} karakter, ilk {MAX_CLOB_CHARS} gösteriliyor)"
+        return _jsonable(text)
     if isinstance(value, (bytes, memoryview)):
         return f"<{len(bytes(value))} bytes>"
     # Oracle native JSON arrives as a dict or list; stringifying it would turn
@@ -664,7 +676,15 @@ class Database:
             return ""
 
         if len(lines) >= max_lines:
-            lines.append(f"... (çıktı {max_lines} satırda kesildi)")
+            # Whatever is left belongs to this block, not the next one: the
+            # buffer is the session's, and a later call within the refresh
+            # interval would otherwise report these as its own output.
+            discarded = await anyio.to_thread.run_sync(
+                self._drain_dbms_output_blocking, DBMS_OUTPUT_DISCARD_LIMIT
+            )
+            lines.append(
+                f"... (çıktı {max_lines} satırda kesildi; kalan {len(discarded)} satır atıldı)"
+            )
         return "\n".join(lines)
 
     async def _refresh_dbms_output_owned(self, force: bool = False) -> None:
@@ -718,7 +738,7 @@ mcp = MCPServer("oracle-mcp-server", version=__version__, lifespan=app_lifespan)
 # history, which creates that database and its directory on first use. The
 # annotation has to describe what the tool does, not what it is for.
 _READ_ONLY = ToolAnnotations(
-    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
 
 
@@ -971,15 +991,15 @@ async def _fetch_columns(db: Database, table: str) -> list[ColumnInfo]:
     ]
 
 
-@_log_exploration(
-    "get_source_code",
-    lambda object_name, object_type: f"GET SOURCE: {object_name} ({object_type or 'AUTO'})",
-)
 @mcp.tool(
     title="Kaynak kodu getir",
     description="Get the source of a PL/SQL object (FUNCTION, PROCEDURE, TRIGGER, PACKAGE, "
     "PACKAGE BODY, TYPE) from USER_SOURCE.",
     annotations=_READ_ONLY,
+)
+@_log_exploration(
+    "get_source_code",
+    lambda object_name, object_type: f"GET SOURCE: {object_name} ({object_type or 'AUTO'})",
 )
 async def get_source_code(
     object_name: Annotated[str, Field(min_length=1, description="Object name (case-insensitive).")],

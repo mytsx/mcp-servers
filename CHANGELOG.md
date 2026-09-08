@@ -57,6 +57,18 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **ssh-mcp-server**: shell expansions are removed before the safety rules run. `r$()m -rf /`
+  and `r${x}m -rf /` both invoke `rm`, and neither matched anything.
+- **ssh-mcp-server**: a PID is not an identity. The process shown in the confirmation can
+  exit while the question is on screen and its number be handed to another one, so the
+  process's start time is recorded and checked immediately before the signal.
+- **mapeg-oracle-mcp**: a CLOB is read up to a documented bound and says when it was cut,
+  rather than materializing the whole value.
+- **mapeg-oracle-mcp**: truncated DBMS_OUTPUT is drained, so its leftovers cannot surface as
+  the next call's output.
+- **mapeg-oracle-mcp**: `get_source_code`'s decorators were inverted, so its history logging
+  never ran.
+- The query-logging tools are not idempotent either: a retry writes a second history row.
 - **docusaurus-mcp**: a webpack chunk that fails to load is recorded as a failure rather than
   treated as a chunk holding no document, so an SPA site's partial outage is refused like a
   static one's.

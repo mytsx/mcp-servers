@@ -9,9 +9,11 @@
 #          DB_USER=testuser DB_PASSWORD=testpass
 #   export ORACLE_CONNECTION_STRING='User Id=testuser;Password=testpass;Data Source=127.0.0.1:1522/XEPDB1'
 #
+# No `set -e` on purpose: every suite runs even when an earlier one fails, and
+# the exit status comes from the tally at the end.
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 PYTHON_SERVERS=(
   agent-chat

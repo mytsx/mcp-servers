@@ -511,7 +511,7 @@ mcp = MCPServer("postgresql-mcp-server", version=__version__, lifespan=app_lifes
 # history, which creates that database and its directory on first use. The
 # annotation has to describe what the tool does, not what it is for.
 _READ_ONLY = ToolAnnotations(
-    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
 )
 
 

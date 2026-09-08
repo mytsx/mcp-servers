@@ -25,6 +25,9 @@ class FakeHost:
         # When set, this path reports absent once and then springs into
         # existence, standing in for another process creating it.
         self.appears_after_check: str | None = None
+        # Successive answers to `ps -o lstart=`, standing in for a PID that is
+        # recycled between the confirmation and the signal.
+        self.identities: list[str] = []
 
     def install(self, connection_class, monkeypatch) -> None:
         """Replace every blocking paramiko call with this host's own.
@@ -54,6 +57,8 @@ class FakeHost:
             return ((data or b"").decode(), "" if data else "No such file", 0 if data else 1)
         if command.startswith("ls -la"):
             return ("total 4\ndrwx r-x\n", "", 0)
+        if "lstart=" in command and self.identities:
+            return (self.identities.pop(0), "", 0)
         if command.startswith("ps "):
             return ("USER PID CMD\nroot 1 init\n", "", 0)
         if command.startswith("kill "):
@@ -182,6 +187,11 @@ def _client(server_module, confirm=True, asked=None):
         ("chmod 755 /srv -R", False, True),
         ("chown user /srv --recursive", False, True),
         ("chmod 755 /srv", False, False),
+        # Expansions vanish from the command word when the shell runs it, so
+        # they must vanish before the rules are applied too.
+        ("r$()m -rf --no-preserve-root /", True, True),
+        ("r${x}m -rf /tmp/build", False, True),
+        ("echo $HOME", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),
@@ -484,5 +494,28 @@ def test_a_real_sftp_failure_is_not_reported_as_a_collision(raw_module):
     async def run():
         with pytest.raises(raw_module.ToolError, match="SFTP yazma hatası"):
             await connection.write_file("/root/denied.txt", "x", exclusive=True)
+
+    anyio.run(run)
+
+
+def test_a_recycled_pid_is_not_killed(server_module, host):
+    """A PID is not an identity: the approved process can exit mid-question.
+
+    The resolver records what the user was shown; if the number now belongs to
+    something else, no signal is sent.
+    """
+    host.identities = [
+        "Mon Jan 1 00:00:00 2026 nginx",      # what the user was shown
+        "Mon Jan 1 12:00:00 2026 postgres",   # what holds the PID by kill time
+    ]
+
+    async def run():
+        async with _client(server_module, confirm=True) as client:
+            result = await client.call_tool(
+                "process_manager", {"action": "kill", "target": "1234"}
+            )
+            assert result.is_error is True
+            assert "artık onaylanan süreç değil" in result.content[0].text
+            assert not any(c.startswith("kill ") for c in host.commands)
 
     anyio.run(run)

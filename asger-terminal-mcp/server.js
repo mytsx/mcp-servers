@@ -86,12 +86,14 @@ function requirePage() {
 /**
  * The individual commands in a shell line, each judged on its own.
  *
- * Quote characters are removed, not replaced with a space: a shell concatenates
- * the fragments of one word, so `r''m -rf /` runs `rm`. Turning the quotes into
- * spaces produced `r  m` and matched nothing.
+ * Quote characters and expansions are removed, not replaced with a space: a
+ * shell concatenates the fragments of one word, so `r''m -rf /`, `r$()m -rf /`
+ * and `r${x}m -rf /` all run `rm`. Turning them into spaces produced `r  m`,
+ * which matched nothing.
  */
 function commandSegments(command) {
   return command
+    .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*/g, '')
     .replace(/['"\\]/g, '')
     .split(/\|\||&&|[;\n|&]/)
     .map((part) => part.trim())

@@ -461,7 +461,9 @@ class SSHConnection:
                 if self.client is None:
                     # A previous attempt's reconnect failed; try again here so
                     # the remaining attempts are not spent on a missing client.
-                    await self.connect()
+                    # Through the lock: two commands in this branch would
+                    # otherwise each build a client and strand one of them.
+                    await self.reconnect()
                     reconnected = True
                 out, err, exit_code = await self._exec_cancellable(command, timeout)
                 return CommandResult(
@@ -601,6 +603,18 @@ class SSHConnection:
 # keeps `rm -rf /; true` from escaping a rule anchored to the end of the input.
 _SEGMENT_SEPARATOR = re.compile(r"(?:\|\||&&|[;\n|&])")
 
+# Shell expansions that vanish from the command word when the shell runs it:
+# `r$()m`, `r${x}m` (x unset) and `r`​`​`m` all invoke rm. They are removed before
+# classification, so the name the shell will see is the name that is matched.
+_EXPANSION = re.compile(
+    r"""\$\([^)]*\)      # $( ... )
+      | `[^`]*`          # ` ... `
+      | \$\{[^}]*\}      # ${ ... }
+      | \$[A-Za-z_][A-Za-z0-9_]*  # $NAME
+    """,
+    re.VERBOSE,
+)
+
 
 def command_segments(command: str) -> list[str]:
     """The individual commands in a shell line, each classified on its own.
@@ -611,7 +625,7 @@ def command_segments(command: str) -> list[str]:
     can only make a segment look more dangerous than it is, which is the safe
     direction for a blocklist.
     """
-    unquoted = command.replace("'", "").replace('"', "").replace("\\", "")
+    unquoted = _EXPANSION.sub("", command).replace("'", "").replace('"', "").replace("\\", "")
     return [part.strip() for part in _SEGMENT_SEPARATOR.split(unquoted) if part.strip()]
 
 
@@ -881,6 +895,20 @@ class KillConfirmation(BaseModel):
     confirm: bool = Field(description="Send the signal to this process?")
 
 
+# What the user was actually shown, per in-flight request. A PID is not an
+# identity: the process can exit while the question is on screen and the number
+# be handed to another one. The resolver records the process's start time here
+# and the tool refuses if it no longer matches. Keyed by request, so nothing
+# leaks between calls, and never client-supplied.
+_KILL_TARGETS: dict[str, str] = {}
+
+
+async def _process_identity(ssh: SSHConnection, pid: str) -> str:
+    """A value that changes when the PID is reused: its start time and command."""
+    result = await ssh.run(f"ps -p {pid} -o lstart=,comm= 2>/dev/null")
+    return " ".join(result.stdout.split())
+
+
 async def confirm_kill(
     ctx: Context[AppContext],
     action: ProcessAction = "list",
@@ -894,6 +922,7 @@ async def confirm_kill(
     ssh = _ssh(ctx)
     described = target
     if target.isdigit():
+        _KILL_TARGETS[ctx.request_id] = await _process_identity(ssh, target)
         listing = await ssh.run(f"ps -p {target} -o pid=,comm=,args= 2>/dev/null")
         described = listing.stdout.strip() or f"PID {target} (bulunamadı)"
 
@@ -948,7 +977,19 @@ async def process_manager(
     if not target.isdigit():
         raise ToolError("Kill yalnızca sayısal PID kabul eder.")
     if not confirmation.confirm:
+        _KILL_TARGETS.pop(ctx.request_id, None)
         raise ToolError(f"Kullanıcı {target} sürecini sonlandırmayı onaylamadı.")
+
+    approved = _KILL_TARGETS.pop(ctx.request_id, None)
+    if approved is not None:
+        # The PID may have been recycled while the question was on screen.
+        current = await _process_identity(ssh, target)
+        if current != approved:
+            raise ToolError(
+                f"PID {target} artık onaylanan süreç değil (görülen: "
+                f"{approved or 'süreç yok'}, şimdiki: {current or 'süreç yok'}). "
+                "Hiçbir sinyal gönderilmedi."
+            )
 
     result = await ssh.run(f"kill -{quote(signal)} {target}")
     if result.exit_code != 0:

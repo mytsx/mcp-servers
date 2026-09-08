@@ -87,6 +87,8 @@ for (const command of [
   'echo hi; rm -rf /tmp/x',
   'true && rm -r /tmp/x',
   "r''m -rf /tmp/x",
+  'r$()m -rf /tmp/x',
+  'r${x}m -rf /tmp/x',
   'chmod 755 /tmp/x -R',
   'chown user /tmp/x --recursive',
   'reboot',
