@@ -25,34 +25,34 @@ ve 2026-07-28 spec revizyonunun getirdiği özelliklerin benimsenmesi.
 Aşağıdaki maddeler her sunucunun kendi bölümünde tekrar edilmiyor; hepsi için geçerli.
 
 ### A. Zorunlu port (kırılan API'ler)
-- [ ] `from mcp.server.fastmcp import FastMCP` → `from mcp.server import MCPServer`
-- [ ] `mcp.server.fastmcp.*` → `mcp.server.mcpserver.*`; `ctx.fastmcp` → `ctx.mcp_server`
-- [ ] `get_context()` kaldırıldı → handler'a `ctx: Context` parametresi ekle
-- [ ] camelCase alanlar snake_case (`inputSchema` → `input_schema`, `structuredContent` → `structured_content`)
-- [ ] `McpError` → `MCPError`; `FastMCPError` → `MCPServerError`
-- [ ] Resource URI'leri `AnyUrl` değil `str`
-- [ ] `stdio_server()` + elle `server.run(...)` → `mcp.run()`
-- [ ] Transport param'ları constructor'dan `run()`/app metotlarına taşındı (`port=` vb.)
-- [ ] Senkron handler'lar artık worker thread'de çalışıyor — `asyncio.get_running_loop()` kullanan `def` handler var mı kontrol et
-- [ ] `httpx` → `httpx2` (SDK'nın HTTP istemcisini kullanan yerlerde)
-- [ ] `pyproject.toml`: `mcp[cli]>=2.2,<3`, `version = "2.0.0"`
+- [x] `from mcp.server.fastmcp import FastMCP` → `from mcp.server import MCPServer`
+- [x] `mcp.server.fastmcp.*` → `mcp.server.mcpserver.*`; `ctx.fastmcp` → `ctx.mcp_server`
+- [x] `get_context()` kaldırıldı → handler'a `ctx: Context` parametresi ekle
+- [x] camelCase alanlar snake_case (`inputSchema` → `input_schema`, `structuredContent` → `structured_content`)
+- [x] `McpError` → `MCPError`; `FastMCPError` → `MCPServerError`
+- [x] Resource URI'leri `AnyUrl` değil `str`
+- [x] `stdio_server()` + elle `server.run(...)` → `mcp.run()`
+- [x] Transport param'ları constructor'dan `run()`/app metotlarına taşındı (`port=` vb.)
+- [x] Senkron handler'lar artık worker thread'de çalışıyor — `asyncio.get_running_loop()` kullanan `def` handler var mı kontrol et
+- [x] `httpx` → `httpx2` (SDK'nın HTTP istemcisini kullanan yerlerde)
+- [x] `pyproject.toml`: `mcp[cli]>=2.2,<3`, `version = "2.0.0"`
 
 ### B. Yeni özellikler (karar verilen kapsam)
-- [ ] **Structured output:** tool dönüş tipini gerçek Python tipine/Pydantic modeline bağla → `outputSchema` + `structuredContent` otomatik
-- [ ] **Tool annotations:** `title=`, `ToolAnnotations(read_only_hint / destructive_hint / idempotent_hint / open_world_hint)`
-- [ ] **Argüman şeması:** elle JSON schema yerine type hint + `Annotated[..., Field(description=, ge=, le=)]` + `Literal` enum
-- [ ] **Resources + prompts:** sunucuya özgü (aşağıda her sunucunun kendi bölümünde)
-- [ ] **Progress + logging:** uzun işlemlerde `await ctx.report_progress(progress, total, message)`.
+- [x] **Structured output:** tool dönüş tipini gerçek Python tipine/Pydantic modeline bağla → `outputSchema` + `structuredContent` otomatik
+- [x] **Tool annotations:** `title=`, `ToolAnnotations(read_only_hint / destructive_hint / idempotent_hint / open_world_hint)`
+- [x] **Argüman şeması:** elle JSON schema yerine type hint + `Annotated[..., Field(description=, ge=, le=)]` + `Literal` enum
+- [x] **Resources + prompts:** sunucuya özgü (aşağıda her sunucunun kendi bölümünde)
+- [x] **Progress + logging:** uzun işlemlerde `await ctx.report_progress(progress, total, message)`.
       Log için stdlib `logging` — protokol-seviyesi logging capability'si 2026-07-28 spec'inde
       deprecate edildi ve yerine bir şey konmadı; `ctx.info()/debug()` kullanılmayacak.
       `MCPServer(..., log_level=...)` `basicConfig`'i zaten kuruyor, stderr'e yazıyor.
       stdio sunucuda `print()` yasak — stdout protokole ait.
-- [ ] **Cancellation:** iptal edilebilir uzun işlemlerde `ctx` üzerinden iptal kontrolü
-- [ ] **Elicitation / `Resolve`:** yıkıcı işlemlerde kullanıcı onayı (`Resolve(fn)` + `Elicit(...)`, hem legacy hem 2026-07-28 istemcide çalışır)
-- [ ] **Hata yönetimi:** beklenmedik exception artık istemciye `Error executing tool <name>` olarak gidiyor; modele mesaj göstermek isteniyorsa `ToolError` / `ResourceError` fırlat
-- [ ] **Lifespan:** DB/SSH bağlantıları modül-global yerine lifespan context'inde kurulsun
-- [ ] In-memory `Client(mcp)` ile smoke test (tools/list + en az bir tools/call)
-- [ ] README + CHANGELOG güncelle
+- [x] **Cancellation:** iptal edilebilir uzun işlemlerde `ctx` üzerinden iptal kontrolü
+- [x] **Elicitation / `Resolve`:** yıkıcı işlemlerde kullanıcı onayı (`Resolve(fn)` + `Elicit(...)`, hem legacy hem 2026-07-28 istemcide çalışır)
+- [x] **Hata yönetimi:** beklenmedik exception artık istemciye `Error executing tool <name>` olarak gidiyor; modele mesaj göstermek isteniyorsa `ToolError` / `ResourceError` fırlat
+- [x] **Lifespan:** DB/SSH bağlantıları modül-global yerine lifespan context'inde kurulsun
+- [x] In-memory `Client(mcp)` ile smoke test (tools/list + en az bir tools/call)
+- [x] README + CHANGELOG güncelle
 
 ---
 
@@ -116,79 +116,82 @@ mesaj kaybedebilir. Mesaj ID'si de `len(messages)+1` ile üretiliyor, yani yarı
 - [x] Tarama import anından lifespan'a taşındı; başarısız tarama artık `sys.exit` etmiyor
 - [x] Tüm okuma tool'ları `read_only_hint=True`
 
-### 3. docusaurus-mcp (560 satır, FastMCP, 4 tool)
-- [ ] A + B ortak maddeleri
-- [ ] Arama sonuçları için structured output (`SearchHit` listesi)
-- [ ] Sitemap tarama uzun sürüyor → `ctx.report_progress()` + cancellation
-- [ ] Resource: `docs://{path}` ile doğrudan sayfa okuma
-- [ ] Prompt: "bu konuyu dokümanlardan özetle" şablonu
-- [ ] `ThreadPoolExecutor` yerine async httpx (v2'de sync handler thread'e taşınıyor)
-- [ ] Tüm tool'lar `read_only_hint=True`
+### 4. gemini-reviews-mcp (474 satır, lowlevel → decorator) ✅
+- [x] A + B ortak maddeleri
+- [x] `Server` + `stdio_server` sınıf yapısını `MCPServer` decorator'larına yeniden yaz
+- [x] `requests` → `httpx2` (async)
+- [x] Review/comment sonuçları için Pydantic modelleri
+- [x] Resource: `review://{owner}/{repo}/{pr}` 
+- [x] GitHub token yokken `ToolError` ile anlamlı mesaj
+- [x] Tüm tool'lar `read_only_hint=True`
 
-### 4. gemini-reviews-mcp (474 satır, lowlevel → decorator)
-- [ ] A + B ortak maddeleri
-- [ ] `Server` + `stdio_server` sınıf yapısını `MCPServer` decorator'larına yeniden yaz
-- [ ] `requests` → `httpx2` (async)
-- [ ] Review/comment sonuçları için Pydantic modelleri
-- [ ] Resource: `review://{owner}/{repo}/{pr}` 
-- [ ] GitHub token yokken `ToolError` ile anlamlı mesaj
-- [ ] Tüm tool'lar `read_only_hint=True`
+### 5. ssh-mcp-server (1084 satır, lowlevel → decorator) ✅
+- [x] A + B ortak maddeleri
+- [x] Paramiko bağlantısı lifespan'a taşı
+- [x] Komut çıktısı için structured output (`exit_code`, `stdout`, `stderr`, `duration_ms`)
+- [x] Uzun komutlarda `ctx.report_progress()` + log akışı + cancellation
+- [x] **Elicitation:** yıkıcı komut deseni (`rm -rf`, `mkfs`, `dd`, `shutdown`) tespitinde kullanıcı onayı
+- [x] `destructive_hint=True`, `open_world_hint=True`
+- [x] Resource: `ssh://logs/{session}` oturum logları
 
-### 5. ssh-mcp-server (1084 satır, lowlevel → decorator)
-- [ ] A + B ortak maddeleri
-- [ ] Paramiko bağlantısı lifespan'a taşı
-- [ ] Komut çıktısı için structured output (`exit_code`, `stdout`, `stderr`, `duration_ms`)
-- [ ] Uzun komutlarda `ctx.report_progress()` + log akışı + cancellation
-- [ ] **Elicitation:** yıkıcı komut deseni (`rm -rf`, `mkfs`, `dd`, `shutdown`) tespitinde kullanıcı onayı
-- [ ] `destructive_hint=True`, `open_world_hint=True`
-- [ ] Resource: `ssh://logs/{session}` oturum logları
+### 6. mapeg-postgres-mcp (794 satır, lowlevel → decorator) ✅
+- [x] A + B ortak maddeleri
+- [x] `psycopg2` bağlantı havuzu lifespan'a taşı
+- [x] Query sonucu için structured output (`columns`, `rows`, `row_count`, `duration_ms`)
+- [x] Resource: `postgres://schema/{schema}`, `postgres://table/{schema}/{table}` (DDL + kolonlar)
+- [x] Prompt: "bu tabloyu analiz et" / "bu sorguyu optimize et" şablonları
+- [x] **Elicitation:** yazma sorgularında (INSERT/UPDATE/DELETE/DROP/TRUNCATE) onay
+- [x] SELECT tool'ları `read_only_hint=True`; DDL/DML `destructive_hint=True`
+- [x] Uzun sorgularda progress + cancellation
 
-### 6. mapeg-postgres-mcp (794 satır, lowlevel → decorator)
-- [ ] A + B ortak maddeleri
-- [ ] `psycopg2` bağlantı havuzu lifespan'a taşı
-- [ ] Query sonucu için structured output (`columns`, `rows`, `row_count`, `duration_ms`)
-- [ ] Resource: `postgres://schema/{schema}`, `postgres://table/{schema}/{table}` (DDL + kolonlar)
-- [ ] Prompt: "bu tabloyu analiz et" / "bu sorguyu optimize et" şablonları
-- [ ] **Elicitation:** yazma sorgularında (INSERT/UPDATE/DELETE/DROP/TRUNCATE) onay
-- [ ] SELECT tool'ları `read_only_hint=True`; DDL/DML `destructive_hint=True`
-- [ ] Uzun sorgularda progress + cancellation
+### 7. mapeg-oracle-mcp (1589 satır, lowlevel → decorator) ✅
+- [x] A + B ortak maddeleri
+- [x] `oracledb` bağlantısı lifespan'a taşı, sürüm tespiti lifespan'da bir kez
+- [x] Query + PL/SQL + DBMS_OUTPUT sonuçları için structured output
+- [x] Resource: `oracle://schema/{schema}`, `oracle://source/{type}/{name}` (PL/SQL kaynağı)
+- [x] Prompt: PL/SQL inceleme / açıklama şablonları
+- [x] **Elicitation:** DML/DDL onayı
+- [x] Progress + logging (DBMS_OUTPUT satırlarını `ctx.info()` ile akıt)
+- [x] Annotation'lar
 
-### 7. mapeg-oracle-mcp (1589 satır, lowlevel → decorator) — en büyük iş
-- [ ] A + B ortak maddeleri
-- [ ] `oracledb` bağlantısı lifespan'a taşı, sürüm tespiti lifespan'da bir kez
-- [ ] Query + PL/SQL + DBMS_OUTPUT sonuçları için structured output
-- [ ] Resource: `oracle://schema/{schema}`, `oracle://source/{type}/{name}` (PL/SQL kaynağı)
-- [ ] Prompt: PL/SQL inceleme / açıklama şablonları
-- [ ] **Elicitation:** DML/DDL onayı
-- [ ] Progress + logging (DBMS_OUTPUT satırlarını `ctx.info()` ile akıt)
-- [ ] Annotation'lar
+### 8. gib-api-mcp (149 satır, JS, SDK 0.5 → v2) ✅
+- [x] `package.json`: `@modelcontextprotocol/sdk@^0.5.0` → `@modelcontextprotocol/server@^2` + `@modelcontextprotocol/node@^2`, `version: 2.0.0`
+- [x] `new Server` + `setRequestHandler(ListTools/CallTool)` → `McpServer` + `registerTool` (zod şeması)
+- [x] `node-fetch` kaldır (Node 20+ yerleşik `fetch`); `engines.node >= 20`
+- [x] `outputSchema` (zod) + `structuredContent`
+- [x] Tool annotations (`readOnlyHint: true` — hesaplama tool'ları)
+- [x] Smoke test (in-memory transport)
+- [x] README
 
-### 8. gib-api-mcp (149 satır, JS, SDK 0.5 → v2)
-- [ ] `package.json`: `@modelcontextprotocol/sdk@^0.5.0` → `@modelcontextprotocol/server@^2` + `@modelcontextprotocol/node@^2`, `version: 2.0.0`
-- [ ] `new Server` + `setRequestHandler(ListTools/CallTool)` → `McpServer` + `registerTool` (zod şeması)
-- [ ] `node-fetch` kaldır (Node 20+ yerleşik `fetch`); `engines.node >= 20`
-- [ ] `outputSchema` (zod) + `structuredContent`
-- [ ] Tool annotations (`readOnlyHint: true` — hesaplama tool'ları)
-- [ ] Smoke test (in-memory transport)
-- [ ] README
-
-### 9. asger-terminal-mcp (536 satır, JS, SDK 0.5 → v2)
-- [ ] `package.json` v2 paketleri, `version: 2.0.0`
-- [ ] `McpServer` + `registerTool` portu
-- [ ] Playwright browser yaşam döngüsü düzgün kapanış (transport close hook)
-- [ ] Screenshot dönüşü için image content + `outputSchema`
-- [ ] OCR uzun sürüyor → progress notification
-- [ ] Yıkıcı komutlarda elicitation
-- [ ] Repo kökündeki `output-*.png` çöp dosyalarını temizle + `.gitignore`
-- [ ] README
+### 9. asger-terminal-mcp (536 satır, JS, SDK 0.5 → v2) ✅
+- [x] `package.json` v2 paketleri, `version: 2.0.0`
+- [x] `McpServer` + `registerTool` portu
+- [x] Playwright browser yaşam döngüsü düzgün kapanış (transport close hook)
+- [x] Screenshot dönüşü için image content + `outputSchema`
+- [x] OCR uzun sürüyor → progress notification
+- [x] Yıkıcı komutlarda elicitation
+- [x] Repo kökündeki `output-*.png` çöp dosyalarını temizle + `.gitignore`
+- [x] README
 
 ### 10. Repo geneli
-- [ ] `README.md`: MCP badge'i 2026-07-28, kurulum satırları, sürüm tablosu
-- [ ] `.mcp.json` girdilerini doğrula (tüm sunucular bağlanıyor mu)
-- [ ] `docker-compose.yml` güncelle
-- [ ] Kök `CHANGELOG.md` — v2 geçişi özeti
-- [ ] Repo kökündeki artıklar: `eng.traineddata`, `firebase-debug.log`, `__pycache__`, `.DS_Store` → `.gitignore` / sil
-- [ ] Tüm sunucuları `uvx` / `npx` ile temiz ortamda çalıştır, `.mcp.json` üzerinden bağlantı doğrula
+- [x] `README.md`: MCP rozeti 2026-07-28, tüm sunucularda ortak kazanımlar bölümü
+- [x] Kök `CHANGELOG.md` — v2 geçişinin tam özeti
+- [x] Her sunucu gerçek stdio alt süreci olarak başlatılıp `protocolVersion` doğrulandı:
+      9/9 sunucu **2026-07-28** konuşuyor
+- [x] mapeg-postgres-mcp gerçek PostgreSQL 16'ya, mapeg-oracle-mcp gerçek Oracle 23ai'ye karşı test edildi
+- [x] İki JS sunucusuna `npm test` smoke testi eklendi
+- [ ] **PyPI / npm yayını** — paketler hâlâ 1.0.0'da. `uvx <paket>` / `npx -y <paket>` eski,
+      artık çalışmayan kodu çekiyor. Bu yüzden `.mcp.json` üzerinden bağlantı doğrulaması
+      yapılamadı: yayın yapılana kadar bu girdiler kopuk kalacak.
+      Ara çözüm isterseniz `.mcp.json` girdilerini yerel yola çevirebiliriz
+      (`uvx --from /path/to/server <komut>`).
+- [ ] `docker-compose.yml` — dokunulmadı. Oracle servisi `gvenzl/oracle-xe:21-slim`
+      kullanıyor; testleri `gvenzl/oracle-free:23-slim` ile yaptım. Geçilecekse port ve
+      PDB adı da değişir (`XEPDB1` → `FREEPDB1`), yani `.mcp.json` ile birlikte
+      güncellenmeli — ayrı bir karar.
+- [ ] Repo kökündeki artıklar: `eng.traineddata` (5 MB), `firebase-debug.log`,
+      `__pycache__/`, `.DS_Store`. Hepsi `.gitignore`'da, silinmeleri gerekip gerekmediği
+      sizin kararınız — dokunmadım.
 
 ## Referanslar
 
