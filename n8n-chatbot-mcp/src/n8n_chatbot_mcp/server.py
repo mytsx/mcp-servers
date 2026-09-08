@@ -40,6 +40,12 @@ logger = logging.getLogger(__name__)
 CHATBOT_URL = os.environ.get("N8N_CHATBOT_URL", "")
 CHATBOT_TIMEOUT = int(os.environ.get("N8N_CHATBOT_TIMEOUT", "120"))
 
+# Discovery runs at import, before the server is serving anything, so its
+# timeout is what a client waits through on startup. It is best-effort — the
+# server works without it — so it is kept short rather than sharing the
+# request timeout above.
+DISCOVERY_TIMEOUT = 5
+
 # TLS verification is on unless it is explicitly turned off. An n8n instance
 # behind a self-signed certificate needs N8N_CHATBOT_VERIFY_TLS=false; nothing
 # else should.
@@ -79,7 +85,7 @@ def _discover_chat_config() -> ChatConfig:
     """GET the chat UI HTML and extract instance headers, name, description."""
     config = ChatConfig()
     try:
-        with httpx2.Client(timeout=15, verify=VERIFY_TLS) as client:
+        with httpx2.Client(timeout=DISCOVERY_TIMEOUT, verify=VERIFY_TLS) as client:
             resp = client.get(CHATBOT_URL)
             if resp.status_code != 200 or "text/html" not in resp.headers.get("content-type", ""):
                 return config

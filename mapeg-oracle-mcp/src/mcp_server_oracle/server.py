@@ -379,6 +379,9 @@ class Database:
         self.read_only = os.getenv("READ_ONLY", "").lower() in ("true", "1", "yes")
         self.db_identifier = ""
         self.workspace_path = os.getcwd()
+        # Held for the duration of a query, so cancellation can only ever reach
+        # the statement the cancelling request itself started.
+        self._query_lock = anyio.Lock()
         self.dbms_output_enabled = False
         self.last_dbms_output_check = 0.0
         if self.read_only:
@@ -478,6 +481,17 @@ class Database:
         the thread is not an option here: it would leave it using a connection
         the next call is about to reuse.
         """
+        # One connection, so one query at a time: without this a request could
+        # be waiting for the connection while another's query runs, and its
+        # cancellation would cancel that unrelated query. Waiting here is
+        # cancellable and touches nothing.
+        async with self._query_lock:
+            return await self._run_owned(sql, params)
+
+    async def _run_owned(
+        self, sql: str, params: dict | None
+    ) -> tuple[list[dict], list[str], int]:
+        """Run the statement while this request owns the connection."""
         state = {"finished": False}
 
         async def watchdog() -> None:

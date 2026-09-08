@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-postgres-mcp**: `EXPLAIN ANALYZE <write>` is treated as a write. PostgreSQL runs
+  the statement it wraps, so `EXPLAIN ANALYZE DELETE FROM t` used to delete rows through
+  `execute_sql` unconfirmed and under read-only mode.
+- **mapeg-postgres-mcp**: the row-count and size queries for a table go through
+  `psycopg2.sql.Identifier` and bind parameters. A table can legally be named
+  `x"; DELETE FROM t; --`, and hand-quoting it turned reading that table into running it.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: one query at a time per connection.
+  Every request shared a connection, so a request cancelled while waiting for it could
+  cancel the query another request was running.
+- **ssh-mcp-server**: each command's cancellation closes its own channel. A single shared
+  field meant one call's cancellation could close a concurrent call's command.
+- **ssh-mcp-server** and **asger-terminal-mcp**: options that carry a value no longer hide a
+  destructive flag — `rm --interactive=never -r /path` used to run unconfirmed.
 - **mapeg-postgres-mcp**: `CALL` and `DO` are treated as writes — they run code this server
   cannot see into, the way a PL/SQL block does on the Oracle side.
 - **mapeg-postgres-mcp**: literal and comment masking preserves offsets. It was used to find

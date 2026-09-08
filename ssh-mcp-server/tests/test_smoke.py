@@ -43,7 +43,10 @@ class FakeHost:
         monkeypatch.setattr(connection_class, "_write_file_blocking", self._write)
         monkeypatch.setattr(connection_class, "_file_exists_blocking", self._exists)
 
-    def _exec(self, command: str, _timeout: int) -> tuple[str, str, int]:
+    def _exec(self, command: str, _timeout: int, channel_holder: dict) -> tuple[str, str, int]:
+        # Mirrors the real signature: each call publishes its own channel so a
+        # cancellation closes the command it belongs to.
+        channel_holder["channel"] = None
         self.commands.append(command)
         if command.startswith(("head -n", "cat ")):
             path = command.split("'")[1] if "'" in command else command.split()[-1]

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import anyio
 import pytest
+from urllib.parse import quote
 from mcp import Client
 from mcp.types import ElicitResult
 
@@ -181,6 +182,13 @@ def test_wide_numerics_are_not_rounded(mcp_server):
         # Code this server cannot see into.
         ("CALL destructive_proc()", True),
         ("DO $$ BEGIN DELETE FROM t; END $$", True),
+        # EXPLAIN ANALYZE runs the statement it wraps, so what it wraps decides.
+        ("EXPLAIN SELECT 1", False),
+        ("EXPLAIN ANALYZE SELECT 1", False),
+        ("EXPLAIN ANALYZE DELETE FROM t", True),
+        ("EXPLAIN (ANALYZE true) DELETE FROM t", True),
+        ("EXPLAIN (COSTS off) SELECT 1", False),
+        ("SELECT * FROM analyze_log", False),
     ],
 )
 def test_write_detection(mcp_server, sql, is_write):
@@ -370,3 +378,71 @@ def test_cancelling_a_call_cancels_the_query(mcp_server, database):
         time.sleep(0.25)
 
     raise AssertionError("pg_sleep hâlâ çalışıyor: iptal veritabanına ulaşmadı")
+
+
+def test_explain_analyze_of_a_delete_is_confirmed(mcp_server, database):
+    """EXPLAIN ANALYZE executes what it explains, so it needs the same guard."""
+    asked: list[str] = []
+
+    async def run():
+        async with _client(mcp_server, confirm=False, asked=asked) as client:
+            result = await client.call_tool(
+                "execute_sql",
+                {"sql": "EXPLAIN ANALYZE DELETE FROM mcp_test_musteriler WHERE id = 3"},
+            )
+            assert result.is_error is True
+            assert asked, "an EXPLAIN ANALYZE of a DELETE must be confirmed"
+
+    anyio.run(run)
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM mcp_test_musteriler")
+        assert cursor.fetchone()[0] == 3
+
+
+def test_a_hostile_table_name_cannot_break_out_of_a_query(mcp_server, database):
+    """A table can legally be named `x"; DELETE ...; --`.
+
+    The row count and size queries used to interpolate the name between quotes,
+    which turned reading such a table into running whatever the name contained —
+    under autocommit and regardless of read-only mode. They go through
+    psycopg2's Identifier now.
+    """
+    from psycopg2 import sql as sql_builder
+
+    import mcp_server_postgres.server as module
+
+    hostile = 'mcp_test_x"; DELETE FROM mcp_test_musteriler; --'
+    with database.cursor() as cursor:
+        # Created through Identifier for the same reason the server has to: the
+        # name contains a quote, and hand-quoting it is what the bug was.
+        cursor.execute(
+            sql_builder.SQL("CREATE TABLE {} (id integer)").format(
+                sql_builder.Identifier(hostile)
+            )
+        )
+
+    try:
+
+        async def run():
+            db = module.Database()
+            await db.connect()
+            try:
+                assert await db.count_rows("public", hostile) == 0
+                assert await db.table_size("public", hostile)
+            finally:
+                db.close()
+
+        anyio.run(run)
+
+        # The rows the name tried to delete are still there.
+        with database.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM mcp_test_musteriler")
+            assert cursor.fetchone()[0] == 3
+    finally:
+        with database.cursor() as cursor:
+            cursor.execute(
+                sql_builder.SQL("DROP TABLE IF EXISTS {}").format(
+                    sql_builder.Identifier(hostile)
+                )
+            )

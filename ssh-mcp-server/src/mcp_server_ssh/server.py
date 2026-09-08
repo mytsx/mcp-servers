@@ -68,9 +68,11 @@ RETRY_DELAY_SECONDS = 1
 
 # Commands that are never run, at any confirmation. These destroy the host
 # rather than something on it.
-# The flags of an `rm`, in any spelling: `-rf`, `-r -f`, or the GNU long forms.
-# Matching only a single dash let `rm --recursive --force /` slip through.
-_RM_FLAGS = r"(?:(?:-[a-zA-Z]+|--[a-z-]+)\s+)*"
+# The options that can precede a destructive flag, in any spelling: short
+# bundles, GNU long forms, and long forms carrying a value such as
+# `--interactive=never`. Without the value form, `rm --interactive=never -r`
+# was auto-approved because the scan stopped at the first unrecognised option.
+_RM_FLAGS = r"(?:(?:-[a-zA-Z]+|--[a-z-]+(?:=[^\s]*)?)\s+)*"
 
 BLOCKED_PATTERNS = [
     # `rm -rf /` and `rm -rf /*`, but not `rm -rf /var/tmp/build` — that one is
@@ -105,7 +107,10 @@ CONFIRM_PATTERNS = [
         # the long form as --recursive. Matching a lowercased command against an
         # uppercase R never fired at all.
         # The command name is matched case-insensitively, the flag is not.
-        re.compile(r"\b(?i:chown|chmod)\s+(?:-{1,2}[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*R|--(?i:recursive)\b)"),
+        re.compile(
+            r"\b(?i:chown|chmod)\s+(?:-{1,2}[a-zA-Z-]+(?:=[^\s]*)?\s+)*"
+            r"(?:-[a-zA-Z]*R|--(?i:recursive)\b)"
+        ),
         "izinleri özyinelemeli değiştiriyor",
     ),
     (re.compile(r"\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b", re.I), "paket kaldırıyor"),
@@ -268,7 +273,7 @@ class SSHConnection:
         self.activity_logger = get_activity_logger()
         self.last_connection_check: float | None = None
         self.connection_failures = 0
-        self._active_channel = None
+
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -369,17 +374,20 @@ class SSHConnection:
 
     # -- running commands --------------------------------------------------
 
-    def _exec_blocking(self, command: str, timeout: int) -> tuple[str, str, int]:
+    def _exec_blocking(
+        self, command: str, timeout: int, channel_holder: dict
+    ) -> tuple[str, str, int]:
         assert self.client is not None
         _, stdout, stderr = self.client.exec_command(command, timeout=timeout)
-        # Kept so a cancelled call can close it and stop the remote command.
-        self._active_channel = stdout.channel
+        # Published to this call's own holder, so a cancellation closes the
+        # channel of the command it belongs to and not a concurrent one.
+        channel_holder["channel"] = stdout.channel
         try:
             out = stdout.read().decode("utf-8", errors="ignore")
             err = stderr.read().decode("utf-8", errors="ignore")
             return out, err, stdout.channel.recv_exit_status()
         finally:
-            self._active_channel = None
+            channel_holder["channel"] = None
 
     async def _exec_cancellable(self, command: str, timeout: int) -> tuple[str, str, int]:
         """Run a command so that cancelling the call also stops it remotely.
@@ -390,12 +398,13 @@ class SSHConnection:
         channel instead, which makes the reads fail and the thread return.
         """
         state = {"finished": False}
+        channel_holder: dict = {"channel": None}
 
         async def watchdog() -> None:
             try:
                 await anyio.sleep_forever()
             except anyio.get_cancelled_exc_class():
-                channel = self._active_channel
+                channel = channel_holder["channel"]
                 if not state["finished"] and channel is not None:
                     with anyio.CancelScope(shield=True):
                         await anyio.to_thread.run_sync(channel.close)
@@ -407,7 +416,9 @@ class SSHConnection:
         async with anyio.create_task_group() as task_group:
             task_group.start_soon(watchdog)
             try:
-                result = await anyio.to_thread.run_sync(self._exec_blocking, command, timeout)
+                result = await anyio.to_thread.run_sync(
+                    self._exec_blocking, command, timeout, channel_holder
+                )
             except Exception as exc:
                 # Held rather than raised: a task group would wrap it in an
                 # ExceptionGroup and the retry loop matches on paramiko's types.

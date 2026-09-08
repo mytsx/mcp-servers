@@ -24,6 +24,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver import Context, Elicit, Resolve
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.types import ToolAnnotations
+from psycopg2 import sql as sql_builder
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel, Field
 
@@ -251,12 +252,25 @@ def split_statements(sql: str) -> list[str]:
     return [part for part in parts if part.strip()]
 
 
+# `EXPLAIN ANALYZE <statement>` executes the statement it wraps, so what it
+# wraps is what decides whether this is a write. Matched against the options
+# before the wrapped statement begins, so a table called "analyze" is not one.
+_EXPLAIN_ANALYZE = re.compile(
+    r"^\s*EXPLAIN\s*(?:\(\s*[^)]*\bANALYZE\b[^)]*\)|\s+ANALYZE\b)", re.IGNORECASE
+)
+
+
 def _statement_is_write(sql: str) -> bool:
     keyword = statement_keyword(sql)
     if keyword in WRITE_KEYWORDS or keyword in OPAQUE_KEYWORDS:
         return True
     if keyword == "WITH":
         return _CTE_WRITE.search(_mask_literals(sql)) is not None
+    if keyword == "EXPLAIN":
+        match = _EXPLAIN_ANALYZE.match(_mask_literals(sql))
+        if match:
+            # Classify the statement being explained, not the EXPLAIN itself.
+            return _statement_is_write(sql[match.end() :])
     return False
 
 
@@ -281,6 +295,9 @@ class Database:
             f"/{os.getenv('DB_NAME', '')}"
         )
         self.workspace_path = os.getcwd()
+        # Held for the duration of a query, so cancellation can only ever reach
+        # the statement the cancelling request itself started.
+        self._query_lock = anyio.Lock()
         if self.read_only:
             logger.info("Read-only mode enabled - write queries will be blocked")
 
@@ -315,7 +332,9 @@ class Database:
         if self.connection is None or self.connection.closed:
             await self.connect()
 
-    def _fetch_blocking(self, sql: str, params: tuple | None) -> tuple[list[dict], list[str], int]:
+    def _fetch_blocking(
+        self, sql: str | sql_builder.Composable, params: tuple | None
+    ) -> tuple[list[dict], list[str], int]:
         assert self.connection is not None
         with self.connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(sql, params)
@@ -325,7 +344,7 @@ class Database:
         return rows, columns, affected
 
     async def _run_cancellable(
-        self, sql: str, params: tuple | None
+        self, sql: str | sql_builder.Composable, params: tuple | None
     ) -> tuple[list[dict], list[str], int]:
         """Run the statement so that cancelling the call also cancels the query.
 
@@ -338,6 +357,17 @@ class Database:
         the thread is not an option here: it would leave it using a connection
         the next call is about to reuse.
         """
+        # One connection, so one query at a time: without this a request could
+        # be waiting for the connection while another's query runs, and its
+        # cancellation would cancel that unrelated query. Waiting here is
+        # cancellable and touches nothing.
+        async with self._query_lock:
+            return await self._run_owned(sql, params)
+
+    async def _run_owned(
+        self, sql: str | sql_builder.Composable, params: tuple | None
+    ) -> tuple[list[dict], list[str], int]:
+        """Run the statement while this request owns the connection."""
         state = {"finished": False}
 
         async def watchdog() -> None:
@@ -371,7 +401,9 @@ class Database:
         assert result is not None
         return result
 
-    async def fetch(self, sql: str, params: tuple | None = None) -> tuple[list[dict], list[str], int]:
+    async def fetch(
+        self, sql: str | sql_builder.Composable, params: tuple | None = None
+    ) -> tuple[list[dict], list[str], int]:
         """Run a statement and return (rows, columns, rowcount)."""
         await self.ensure()
         try:
@@ -379,11 +411,38 @@ class Database:
         except psycopg2.Error as exc:
             raise ToolError(f"SQL hatası: {str(exc).strip()}") from exc
 
-    async def scalar(self, sql: str, params: tuple | None = None) -> Any:
+    async def scalar(self, sql: str | sql_builder.Composable, params: tuple | None = None) -> Any:
         rows, _, _ = await self.fetch(sql, params)
         if not rows:
             return None
         return next(iter(rows[0].values()))
+
+    async def count_rows(self, schema: str, table: str) -> int:
+        """COUNT(*) for a table, with the name passed as an identifier.
+
+        A table really can be called `x"; DELETE FROM t; --`, and it would break
+        straight out of an f-string that quotes it by hand.
+        """
+        statement = sql_builder.SQL("SELECT COUNT(*) FROM {}").format(
+            sql_builder.Identifier(schema, table)
+        )
+        return int(await self.scalar(statement) or 0)
+
+    async def table_size(self, schema: str, table: str) -> str:
+        """Human-readable on-disk size, looked up by name through bind parameters.
+
+        The catalog is queried directly rather than casting a composed name to
+        regclass: a name that needs quoting does not survive that cast, and
+        building the quoted form by hand is what this is avoiding.
+        """
+        size = await self.scalar(
+            """SELECT pg_size_pretty(pg_total_relation_size(c.oid))
+               FROM pg_class c
+               JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = %s AND c.relname = %s""",
+            (schema, table),
+        )
+        return str(size or "?")
 
     def log_query(self, tool_name: str, **fields) -> None:
         direct_log_query_execution(
@@ -639,12 +698,10 @@ async def describe_table(
         raise ToolError(f"'{schema}.{table}' diye bir tablo yok.")
 
     await ctx.report_progress(1, 3, "satır sayısı")
-    row_count = await db.scalar(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+    row_count = await db.count_rows(schema, table)
 
     await ctx.report_progress(2, 3, "boyut")
-    size = await db.scalar(
-        "SELECT pg_size_pretty(pg_total_relation_size(%s))", (f'"{schema}"."{table}"',)
-    )
+    size = await db.table_size(schema, table)
 
     await ctx.report_progress(3, 3, "tamamlandı")
     return TableDescription(
@@ -921,10 +978,8 @@ async def table_resource(schema: str, table: str) -> str:
     columns = await _fetch_columns(db, schema, table)
     if not columns:
         raise ResourceError(f"'{schema}.{table}' diye bir tablo yok.")
-    row_count = await db.scalar(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
-    size = await db.scalar(
-        "SELECT pg_size_pretty(pg_total_relation_size(%s))", (f'"{schema}"."{table}"',)
-    )
+    row_count = await db.count_rows(schema, table)
+    size = await db.table_size(schema, table)
     return TableDescription(
         schema_name=schema,
         table_name=table,

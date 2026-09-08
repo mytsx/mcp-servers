@@ -34,7 +34,7 @@ const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), 'asg
 // `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`. Matching only the
 // first option let `rm -v -r /path` and `rm --recursive --force /path` through.
 const RM_DESTRUCTIVE =
-  /\brm\s+(?:-{1,2}[a-z-]+\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
+  /\brm\s+(?:(?:-[a-z]+|--[a-z-]+(?:=[^\s]*)?)\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
 
 const DESTRUCTIVE_PATTERNS = [
   [RM_DESTRUCTIVE, 'dosya/dizin siliyor'],
@@ -45,7 +45,7 @@ const DESTRUCTIVE_PATTERNS = [
     // Scan the whole option prefix, and match both spellings of recursive. The
     // command name is case-insensitive; the short flag is not, because
     // `chmod -R` and `chmod -r` are different things.
-    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:-{1,2}[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
+    /\b(?:chown|chmod|CHOWN|CHMOD)\s+(?:-{1,2}[a-zA-Z-]+(?:=[^\s]*)?\s+)*(?:-[a-zA-Z]*R|--recursive\b)/,
     'izinleri özyinelemeli değiştiriyor',
   ],
   [/\b(apt|apt-get|yum|dnf)\s+(remove|purge|autoremove)\b/i, 'paket kaldırıyor'],
@@ -110,8 +110,12 @@ async function confirmCommand(ctx, command) {
       },
     });
   } catch (error) {
+    // The elicitation layer may reject with something that is not an Error;
+    // reading .message off it would lose the reason for the refusal.
+    const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Yıkıcı komut için onay alınamadı (${error.message}); komut çalıştırılmadı: ${command}`
+      `Yıkıcı komut için onay alınamadı (${reason}); komut çalıştırılmadı: ${command}`,
+      { cause: error }
     );
   }
 
