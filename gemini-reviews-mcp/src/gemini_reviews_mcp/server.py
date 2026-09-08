@@ -4,36 +4,45 @@ Gemini PR Reviews MCP Server
 Fetch Gemini Code Assist reviews from GitHub PRs
 """
 
-import asyncio
+import logging
 import os
 import subprocess
-import sys
-import logging
-import json
-from typing import Any, List, Dict, Optional
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
-import requests
-from urllib.parse import urlparse
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-from dotenv import load_dotenv
+from typing import Annotated, Any, Literal
 
-# Load environment variables
+import httpx2
+from dotenv import load_dotenv
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
+
+from . import __version__
+
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+GEMINI_BOT = "gemini-code-assist[bot]"
+GITHUB_API = "https://api.github.com"
+
+# Used when the user has never posted a "/gemini review" comment on the PR:
+# far enough back that everything Gemini has said is included.
+NO_REVIEW_REQUEST_CUTOFF = "2025-08-01T00:00:00Z"
 
 
 def _resolve_github_token() -> str:
     """Resolve GitHub token: gh CLI first, then GITHUB_TOKEN env var."""
-    # 1) Try gh CLI
     try:
         result = subprocess.run(
             ["gh", "auth", "token"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             logger.info("GitHub token resolved via gh CLI")
@@ -41,7 +50,6 @@ def _resolve_github_token() -> str:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # 2) Fallback to env var
     token = os.getenv("GITHUB_TOKEN", "")
     if token:
         logger.info("GitHub token resolved via GITHUB_TOKEN env var")
@@ -50,426 +58,380 @@ def _resolve_github_token() -> str:
     return token
 
 
-class GeminiPRReviewsMCPServer:
-    def __init__(self):
-        self.server = Server("gemini-reviews-mcp")
-        self.github_token = _resolve_github_token()
-        self.headers = {
-            'Accept': 'application/vnd.github.v3+json',
-        }
-        if self.github_token:
-            self.headers['Authorization'] = f'token {self.github_token}'
-        self.setup_handlers()
-        
-    def setup_handlers(self):
-        """Setup MCP server handlers"""
-        
-        @self.server.list_tools()
-        async def list_tools() -> List[Tool]:
-            """List available tools"""
-            return [
-                Tool(
-                    name="get_gemini_reviews",
-                    description="Get Gemini Code Assist reviews from a GitHub PR. Can fetch all reviews or only those after your last '/gemini review' comment",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "repo": {
-                                "type": "string",
-                                "description": "Repository name or owner/repo format. If owner is not provided, uses authenticated user (e.g., 'YtbMp3Indir' or 'owner/YtbMp3Indir')"
-                            },
-                            "pr": {
-                                "type": "integer",
-                                "description": "PR number (optional - will use last PR if not specified)"
-                            },
-                            "after_last_review": {
-                                "type": "boolean",
-                                "description": "If true, only fetch reviews after your last '/gemini review' comment (default: true)",
-                                "default": True
-                            },
-                            "username": {
-                                "type": "string",
-                                "description": "GitHub username (optional - only used when after_last_review is true)"
-                            }
-                        },
-                        "required": ["repo"]
-                    }
-                )
-            ]
-        
-        @self.server.call_tool()
-        async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
-            """Handle tool calls"""
-            try:
-                if name == "get_gemini_reviews":
-                    repo = arguments["repo"]
-                    
-                    # If repo doesn't contain '/', prepend authenticated user
-                    if '/' not in repo:
-                        auth_user = self.get_authenticated_user()
-                        if auth_user:
-                            repo = f"{auth_user}/{repo}"
-                            logger.info(f"Auto-detected repo owner: {auth_user}")
-                        else:
-                            return [TextContent(type="text", text="Error: Could not determine repository owner. Please provide full repo path (owner/repo).")]
-                    
-                    pr = arguments.get("pr")
-                    after_last_review = arguments.get("after_last_review", True)  # Default to True
-                    username = arguments.get("username")
-                    
-                    if after_last_review:
-                        return await self.handle_get_gemini_reviews_after_last(
-                            repo, pr, username
-                        )
-                    else:
-                        # Get all reviews
-                        return await self.handle_get_all_gemini_reviews(
-                            repo, pr
-                        )
-                
-                else:
-                    return [TextContent(type="text", text=f"Unknown tool: {name}")]
-                    
-            except Exception as e:
-                logger.error(f"Error in tool call: {e}")
-                return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    async def handle_get_all_gemini_reviews(self, repo: str, pr: Optional[int]) -> List[TextContent]:
-        """Handle getting all Gemini reviews from a PR"""
-        try:
-            logger.info(f"🚀 Getting all Gemini reviews for {repo}")
-            
-            # Get last PR if not specified
-            if pr is None:
-                pr = self.find_last_pr(repo)
-                if not pr:
-                    return [TextContent(type="text", text="Error: Could not find last PR. Please provide pr parameter.")]
-                logger.info(f"✅ Found last PR: #{pr}")
-            
-            # Fetch all Gemini comments
-            all_gemini_comments = []
-            
-            # Fetch PR reviews with pagination
-            logger.info(f"🔍 Fetching all reviews from {repo} PR #{pr}...")
-            page = 1
-            while True:
-                url = f"https://api.github.com/repos/{repo}/pulls/{pr}/reviews?page={page}&per_page=100"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    reviews = response.json()
-                    if not reviews:
-                        break
-                    
-                    for review in reviews:
-                        if review.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                            all_gemini_comments.append({
-                                'type': 'review',
-                                'date': review.get('submitted_at'),
-                                'state': review['state'],
-                                'body': review['body'],
-                                'html_url': review['html_url']
-                            })
-                    page += 1
-                else:
-                    logger.warning(f"Error fetching reviews: {response.status_code}")
-                    break
-            
-            # Fetch review comments (line comments) with pagination
-            logger.info(f"🔍 Fetching all review comments from {repo} PR #{pr}...")
-            page = 1
-            while True:
-                url = f"https://api.github.com/repos/{repo}/pulls/{pr}/comments?page={page}&per_page=100"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    comments = response.json()
-                    if not comments:
-                        break
-                    
-                    for comment in comments:
-                        if comment.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                            all_gemini_comments.append({
-                                'type': 'line_comment',
-                                'date': comment['created_at'],
-                                'file': comment.get('path'),
-                                'line': comment.get('line'),
-                                'body': comment['body'],
-                                'html_url': comment['html_url']
-                            })
-                    page += 1
-                else:
-                    logger.warning(f"Error fetching review comments: {response.status_code}")
-                    break
-            
-            # Fetch issue comments with pagination
-            logger.info(f"🔍 Fetching all issue comments from {repo} PR #{pr}...")
-            page = 1
-            while True:
-                url = f"https://api.github.com/repos/{repo}/issues/{pr}/comments?page={page}&per_page=100"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    comments = response.json()
-                    if not comments:
-                        break
-                    
-                    for comment in comments:
-                        if comment.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                            all_gemini_comments.append({
-                                'type': 'issue_comment',
-                                'date': comment['created_at'],
-                                'body': comment['body'],
-                                'html_url': comment['html_url']
-                            })
-                    page += 1
-                else:
-                    logger.warning(f"Error fetching issue comments: {response.status_code}")
-                    break
-            
-            # Sort by type priority and date
-            type_priority = {'review': 0, 'line_comment': 1, 'issue_comment': 2}
-            all_gemini_comments.sort(key=lambda x: (type_priority.get(x['type'], 3), x['date']))
-            
-            if not all_gemini_comments:
-                return [TextContent(type="text", text=f"❌ No Gemini Code Assist reviews found in PR #{pr}")]
-            
-            logger.info(f"🤖 Found {len(all_gemini_comments)} total Gemini comments")
-            
-            # Return raw JSON data
-            return [TextContent(type="text", text=json.dumps(all_gemini_comments, indent=2, ensure_ascii=False))]
-            
-        except Exception as e:
-            logger.error(f"Error in handle_get_all_gemini_reviews: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
-    
-    def get_authenticated_user(self) -> str:
-        """Get authenticated GitHub user"""
-        try:
-            response = requests.get("https://api.github.com/user", headers=self.headers)
-            if response.status_code == 200:
-                return response.json()['login']
-        except:
-            pass
-        return None
-    
-    def find_last_pr(self, repo: str) -> Optional[int]:
-        """Find the last PR number in the repository"""
-        try:
-            url = f"https://api.github.com/repos/{repo}/pulls?state=all&sort=created&direction=desc&per_page=1"
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200 and response.json():
-                return response.json()[0]['number']
-        except:
-            pass
-        return None
-    
-    def find_last_gemini_review_request(self, repo: str, pr: int, username: str) -> Optional[str]:
-        """Find the last '/gemini review' comment by the user"""
-        logger.info(f"🔍 Searching for last '/gemini review' comment by {username} in PR #{pr}")
-        
-        try:
-            # Fetch all issue comments with pagination
-            all_comments = []
-            page = 1
-            while True:
-                url = f"https://api.github.com/repos/{repo}/issues/{pr}/comments?page={page}&per_page=100"
-                response = requests.get(url, headers=self.headers)
-                if response.status_code == 200:
-                    comments = response.json()
-                    if not comments:
-                        break
-                    all_comments.extend(comments)
-                    page += 1
-                else:
-                    break
-            
-            # Filter and sort
-            gemini_review_comments = []
-            for comment in all_comments:
-                if (comment.get('user', {}).get('login') == username and 
-                    '/gemini review' in comment.get('body', '').lower()):
-                    gemini_review_comments.append({
-                        'date': comment['created_at'],
-                        'body': comment['body']
-                    })
-            
-            if not gemini_review_comments:
-                logger.info("❌ '/gemini review' comment not found, using default date")
-                return "2025-08-01T00:00:00Z"
-            
-            # Get the most recent one
-            gemini_review_comments.sort(key=lambda x: x['date'], reverse=True)
-            last_review = gemini_review_comments[0]
-            
-            logger.info(f"✅ Found last '/gemini review' comment: {last_review['date']}")
-            logger.info(f"   Content: {last_review['body']}")
-            
-            return last_review['date']
-            
-        except Exception as e:
-            logger.error(f"Error finding last review request: {e}")
-            return "2025-08-01T00:00:00Z"
-    
-    def fetch_gemini_comments_after(self, repo: str, pr: int, after_date: str) -> List[Dict]:
-        """Fetch all Gemini bot comments after a specific date"""
-        all_gemini_comments = []
-        cutoff_time = datetime.fromisoformat(after_date.replace('Z', '+00:00'))
-        
-        logger.info(f"🔍 Fetching Gemini comments after {after_date} for PR #{pr}")
-        logger.info(f"🔍 Cutoff time: {cutoff_time}")
-        
-        # Fetch PR reviews with pagination
-        logger.info(f"🔍 Fetching reviews from {repo} PR #{pr}...")
-        page = 1
-        while True:
-            url = f"https://api.github.com/repos/{repo}/pulls/{pr}/reviews?page={page}&per_page=100"
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200:
-                reviews = response.json()
-                if not reviews:
-                    break
-                
-                for review in reviews:
-                    if review.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                        # Use submitted_at for reviews, not created_at
-                        date_field = review.get('submitted_at')
-                        if not date_field:
-                            logger.warning(f"⚠️  Review missing submitted_at field: {review.keys()}")
-                            continue
-                        
-                        review_time = datetime.fromisoformat(date_field.replace('Z', '+00:00'))
-                        logger.info(f"🤖 Gemini review found: {date_field} | Status: {'✅ INCLUDED' if review_time >= cutoff_time else '❌ EXCLUDED'}")
-                        
-                        if review_time >= cutoff_time:
-                            all_gemini_comments.append({
-                                'type': 'review',
-                                'date': date_field,
-                                'state': review['state'],
-                                'body': review['body'],
-                                'html_url': review['html_url']
-                            })
-                page += 1
-            else:
-                logger.warning(f"Error fetching reviews: {response.status_code}")
-                break
-        
-        # Fetch review comments (line comments) with pagination
-        logger.info(f"🔍 Fetching review comments from {repo} PR #{pr}...")
-        page = 1
-        while True:
-            url = f"https://api.github.com/repos/{repo}/pulls/{pr}/comments?page={page}&per_page=100"
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200:
-                comments = response.json()
-                if not comments:
-                    break
-                
-                for comment in comments:
-                    if comment.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                        comment_time = datetime.fromisoformat(comment['created_at'].replace('Z', '+00:00'))
-                        if comment_time >= cutoff_time:
-                            all_gemini_comments.append({
-                                'type': 'line_comment',
-                                'date': comment['created_at'],
-                                'file': comment.get('path'),
-                                'line': comment.get('line'),
-                                'body': comment['body'],
-                                'html_url': comment['html_url']
-                            })
-                page += 1
-            else:
-                logger.warning(f"Error fetching review comments: {response.status_code}")
-                break
-        
-        # Fetch issue comments with pagination
-        logger.info(f"🔍 Fetching issue comments from {repo} PR #{pr}...")
-        page = 1
-        while True:
-            url = f"https://api.github.com/repos/{repo}/issues/{pr}/comments?page={page}&per_page=100"
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200:
-                comments = response.json()
-                if not comments:
-                    break
-                
-                for comment in comments:
-                    if comment.get('user', {}).get('login') == 'gemini-code-assist[bot]':
-                        comment_time = datetime.fromisoformat(comment['created_at'].replace('Z', '+00:00'))
-                        if comment_time >= cutoff_time:
-                            all_gemini_comments.append({
-                                'type': 'issue_comment',
-                                'date': comment['created_at'],
-                                'body': comment['body'],
-                                'html_url': comment['html_url']
-                            })
-                page += 1
-            else:
-                logger.warning(f"Error fetching issue comments: {response.status_code}")
-                break
-        
-        # Sort by type priority and date
-        type_priority = {'review': 0, 'line_comment': 1, 'issue_comment': 2}
-        all_gemini_comments.sort(key=lambda x: (type_priority.get(x['type'], 3), x['date']))
-        
-        logger.info(f"📊 Summary:")
-        reviews_count = len([c for c in all_gemini_comments if c['type'] == 'review'])
-        line_comments_count = len([c for c in all_gemini_comments if c['type'] == 'line_comment'])
-        issue_comments_count = len([c for c in all_gemini_comments if c['type'] == 'issue_comment'])
-        logger.info(f"   📝 Reviews: {reviews_count}")
-        logger.info(f"   💬 Line Comments: {line_comments_count}")
-        logger.info(f"   🗨️  Issue Comments: {issue_comments_count}")
-        logger.info(f"   📅 After date: {after_date}")
-        
-        return all_gemini_comments
-    
-    
-    async def handle_get_gemini_reviews_after_last(self, repo: str, pr: Optional[int], username: Optional[str]) -> List[TextContent]:
-        """Handle get_gemini_reviews_after_last tool call"""
-        try:
-            logger.info(f"🚀 Starting get_gemini_reviews_after_last for {repo}")
-            
-            # Get authenticated user if not specified
-            if not username:
-                username = self.get_authenticated_user()
-                if not username:
-                    return [TextContent(type="text", text="Error: Could not determine GitHub user. Please provide username parameter.")]
-                logger.info(f"✅ Using authenticated user: {username}")
-            
-            # Get last PR if not specified
-            if pr is None:
-                pr = self.find_last_pr(repo)
-                if not pr:
-                    return [TextContent(type="text", text="Error: Could not find last PR. Please provide pr parameter.")]
-                logger.info(f"✅ Found last PR: #{pr}")
-            
-            # Find last /gemini review comment
-            last_review_date = self.find_last_gemini_review_request(repo, pr, username)
-            logger.info(f"📅 Last review date: {last_review_date}")
-            
-            # Fetch Gemini comments after that date
-            gemini_comments = self.fetch_gemini_comments_after(repo, pr, last_review_date)
-            
-            if not gemini_comments:
-                return [TextContent(type="text", text=f"❌ No Gemini Code Assist reviews found after {username}'s last comment at {last_review_date}")]
-            
-            logger.info(f"🤖 Found {len(gemini_comments)} Gemini comments after last review")
-            
-            # Return raw JSON data
-            return [TextContent(type="text", text=json.dumps(gemini_comments, indent=2, ensure_ascii=False))]
-            
-        except Exception as e:
-            logger.error(f"Error in handle_get_gemini_reviews_after_last: {e}")
-            return [TextContent(type="text", text=f"Error: {str(e)}")]
+# ---------------------------------------------------------------------------
+# Wire models
+# ---------------------------------------------------------------------------
 
-async def main():
-    """Main function to run the MCP server"""
-    server = GeminiPRReviewsMCPServer()
-    
-    async with stdio_server() as (read_stream, write_stream):
-        await server.server.run(
-            read_stream,
-            write_stream,
-            server.server.create_initialization_options()
+CommentKind = Literal["review", "line_comment", "issue_comment"]
+
+# Reviews sort before line comments, which sort before issue comments.
+_KIND_ORDER: dict[CommentKind, int] = {"review": 0, "line_comment": 1, "issue_comment": 2}
+
+
+class GeminiComment(BaseModel):
+    """One thing Gemini Code Assist said on the PR."""
+
+    type: CommentKind = Field(
+        description="review: the verdict on the whole PR. line_comment: a comment on one "
+        "line of the diff. issue_comment: a comment on the PR conversation."
+    )
+    date: str = Field(description="ISO-8601 timestamp of when it was posted.")
+    body: str
+    html_url: str = Field(description="Link to the comment on GitHub.")
+    state: str | None = Field(
+        default=None, description="For a review: APPROVED, CHANGES_REQUESTED, COMMENTED."
+    )
+    file: str | None = Field(default=None, description="For a line comment: the file it is on.")
+    line: int | None = Field(default=None, description="For a line comment: the line number.")
+
+
+class ReviewCounts(BaseModel):
+    reviews: int
+    line_comments: int
+    issue_comments: int
+
+
+class GeminiReviews(BaseModel):
+    """Everything Gemini said on one PR, within the requested window."""
+
+    repo: str = Field(description="Resolved owner/repo.")
+    pr: int
+    after_date: str | None = Field(
+        default=None,
+        description="Only comments at or after this timestamp are included. "
+        "Null when the whole PR history was returned.",
+    )
+    counts: ReviewCounts
+    comments: list[GeminiComment] = Field(
+        description="Reviews first, then line comments, then issue comments; each group oldest first."
+    )
+
+
+# ---------------------------------------------------------------------------
+# GitHub access
+# ---------------------------------------------------------------------------
+
+
+class GitHub:
+    """The slice of the GitHub API this server needs."""
+
+    def __init__(self, client: httpx2.AsyncClient, token: str) -> None:
+        self.client = client
+        self.token = token
+
+    async def _paginate(self, path: str) -> list[dict[str, Any]]:
+        """Read every page of a GitHub list endpoint."""
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = await self.client.get(
+                f"{GITHUB_API}{path}", params={"page": page, "per_page": 100}
+            )
+            if resp.status_code != 200:
+                logger.warning("GitHub %s → HTTP %s", path, resp.status_code)
+                if resp.status_code in (401, 403):
+                    raise ToolError(
+                        f"GitHub {path} isteği HTTP {resp.status_code} döndü. "
+                        "Token eksik ya da bu depoya erişimi yok."
+                    )
+                break
+            batch = resp.json()
+            if not batch:
+                break
+            items.extend(batch)
+            page += 1
+        return items
+
+    async def authenticated_user(self) -> str | None:
+        try:
+            resp = await self.client.get(f"{GITHUB_API}/user")
+            if resp.status_code == 200:
+                return resp.json()["login"]
+        except httpx2.HTTPError as exc:
+            logger.warning("Kimlik doğrulanmış kullanıcı alınamadı: %s", exc)
+        return None
+
+    async def last_pr(self, repo: str) -> int | None:
+        try:
+            resp = await self.client.get(
+                f"{GITHUB_API}/repos/{repo}/pulls",
+                params={"state": "all", "sort": "created", "direction": "desc", "per_page": 1},
+            )
+            if resp.status_code == 200 and resp.json():
+                return resp.json()[0]["number"]
+        except httpx2.HTTPError as exc:
+            logger.warning("Son PR bulunamadı: %s", exc)
+        return None
+
+    async def last_review_request(self, repo: str, pr: int, username: str) -> str:
+        """Timestamp of the user's most recent '/gemini review' comment on the PR."""
+        comments = await self._paginate(f"/repos/{repo}/issues/{pr}/comments")
+        dates = [
+            c["created_at"]
+            for c in comments
+            if c.get("user", {}).get("login") == username
+            and "/gemini review" in c.get("body", "").lower()
+        ]
+        if not dates:
+            logger.info("'/gemini review' yorumu yok, varsayılan tarih kullanılıyor")
+            return NO_REVIEW_REQUEST_CUTOFF
+        latest = max(dates)
+        logger.info("Son '/gemini review' yorumu: %s", latest)
+        return latest
+
+    async def reviews(self, repo: str, pr: int) -> list[dict]:
+        return await self._paginate(f"/repos/{repo}/pulls/{pr}/reviews")
+
+    async def line_comments(self, repo: str, pr: int) -> list[dict]:
+        return await self._paginate(f"/repos/{repo}/pulls/{pr}/comments")
+
+    async def issue_comments(self, repo: str, pr: int) -> list[dict]:
+        return await self._paginate(f"/repos/{repo}/issues/{pr}/comments")
+
+
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _is_gemini(item: dict) -> bool:
+    return item.get("user", {}).get("login") == GEMINI_BOT
+
+
+ProgressCallback = Callable[[int, int, str], Awaitable[None]]
+
+
+async def _noop_progress(done: int, total: int, message: str) -> None:
+    return None
+
+
+async def collect_comments(
+    gh: GitHub,
+    repo: str,
+    pr: int,
+    after_date: str | None,
+    progress: ProgressCallback = _noop_progress,
+) -> list[GeminiComment]:
+    """Every Gemini comment on the PR, optionally only those at or after `after_date`."""
+    cutoff = _parse_ts(after_date) if after_date else None
+    collected: list[GeminiComment] = []
+
+    def keep(timestamp: str | None) -> bool:
+        if not timestamp:
+            return False
+        return cutoff is None or _parse_ts(timestamp) >= cutoff
+
+    await progress(0, 3, "İncelemeler alınıyor")
+    for review in await gh.reviews(repo, pr):
+        if not _is_gemini(review):
+            continue
+        submitted = review.get("submitted_at")
+        if not keep(submitted):
+            continue
+        collected.append(
+            GeminiComment(
+                type="review",
+                date=submitted,
+                state=review.get("state"),
+                body=review.get("body") or "",
+                html_url=review.get("html_url", ""),
+            )
         )
 
+    await progress(1, 3, "Satır yorumları alınıyor")
+    for comment in await gh.line_comments(repo, pr):
+        if not _is_gemini(comment) or not keep(comment.get("created_at")):
+            continue
+        collected.append(
+            GeminiComment(
+                type="line_comment",
+                date=comment["created_at"],
+                file=comment.get("path"),
+                line=comment.get("line"),
+                body=comment.get("body") or "",
+                html_url=comment.get("html_url", ""),
+            )
+        )
+
+    await progress(2, 3, "PR yorumları alınıyor")
+    for comment in await gh.issue_comments(repo, pr):
+        if not _is_gemini(comment) or not keep(comment.get("created_at")):
+            continue
+        collected.append(
+            GeminiComment(
+                type="issue_comment",
+                date=comment["created_at"],
+                body=comment.get("body") or "",
+                html_url=comment.get("html_url", ""),
+            )
+        )
+
+    await progress(3, 3, f"{len(collected)} yorum bulundu")
+    collected.sort(key=lambda c: (_KIND_ORDER[c.type], c.date))
+    return collected
+
+
+def _counts(comments: list[GeminiComment]) -> ReviewCounts:
+    return ReviewCounts(
+        reviews=sum(1 for c in comments if c.type == "review"),
+        line_comments=sum(1 for c in comments if c.type == "line_comment"),
+        issue_comments=sum(1 for c in comments if c.type == "issue_comment"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AppContext:
+    gh: GitHub
+
+
+# Resources cannot read the lifespan context in v2, so they go through this.
+_app: AppContext | None = None
+
+
+@asynccontextmanager
+async def app_lifespan(server: MCPServer) -> AsyncIterator[AppContext]:
+    global _app
+    token = _resolve_github_token()
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    async with httpx2.AsyncClient(timeout=30, headers=headers) as client:
+        _app = AppContext(gh=GitHub(client, token))
+        try:
+            yield _app
+        finally:
+            _app = None
+
+
+mcp = MCPServer("gemini-reviews-mcp", version=__version__, lifespan=app_lifespan)
+
+
+async def _resolve_target(gh: GitHub, repo: str, pr: int | None) -> tuple[str, int]:
+    """Fill in the repo owner and the PR number when the caller left them out."""
+    if not gh.token:
+        raise ToolError(
+            "GitHub token bulunamadı. `gh auth login` çalıştır ya da GITHUB_TOKEN ayarla."
+        )
+
+    if "/" not in repo:
+        owner = await gh.authenticated_user()
+        if not owner:
+            raise ToolError(
+                "Depo sahibi belirlenemedi. Tam yolu ver: owner/repo."
+            )
+        repo = f"{owner}/{repo}"
+        logger.info("Depo sahibi otomatik bulundu: %s", owner)
+
+    if pr is None:
+        found = await gh.last_pr(repo)
+        if not found:
+            raise ToolError(f"{repo} deposunda PR bulunamadı. `pr` parametresini ver.")
+        pr = found
+        logger.info("Son PR: #%s", pr)
+
+    return repo, pr
+
+
+@mcp.tool(
+    title="Gemini incelemelerini getir",
+    description="Get Gemini Code Assist reviews from a GitHub PR. Can fetch all reviews or "
+    "only those after your last '/gemini review' comment.",
+    annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+)
+async def get_gemini_reviews(
+    repo: Annotated[
+        str,
+        Field(
+            description="Repository as 'owner/repo', or just the name to use the authenticated "
+            "user as owner (e.g. 'YtbMp3Indir' or 'owner/YtbMp3Indir')."
+        ),
+    ],
+    ctx: Context[AppContext],
+    pr: Annotated[
+        int | None,
+        Field(ge=1, description="PR number. Omitted means the most recently created PR."),
+    ] = None,
+    after_last_review: Annotated[
+        bool,
+        Field(
+            description="Only return comments posted after your most recent '/gemini review' "
+            "comment. False returns the whole PR history."
+        ),
+    ] = True,
+    username: Annotated[
+        str,
+        Field(
+            description="GitHub username whose '/gemini review' comment marks the cutoff. "
+            "Empty means the authenticated user. Only used when after_last_review is true."
+        ),
+    ] = "",
+) -> GeminiReviews:
+    gh = ctx.request_context.lifespan_context.gh
+    repo, pr = await _resolve_target(gh, repo, pr)
+
+    after_date: str | None = None
+    if after_last_review:
+        who = username or await gh.authenticated_user()
+        if not who:
+            raise ToolError(
+                "GitHub kullanıcısı belirlenemedi. `username` parametresini ver ya da "
+                "after_last_review=false kullan."
+            )
+        after_date = await gh.last_review_request(repo, pr, who)
+
+    async def report(done: int, total: int, message: str) -> None:
+        await ctx.report_progress(done, total, message)
+
+    comments = await collect_comments(gh, repo, pr, after_date, progress=report)
+
+    return GeminiReviews(
+        repo=repo, pr=pr, after_date=after_date, counts=_counts(comments), comments=comments
+    )
+
+
+@mcp.resource(
+    "review://{owner}/{repo}/{pr}",
+    name="PR Gemini incelemesi",
+    description="Bir GitHub PR'ındaki tüm Gemini Code Assist yorumları, JSON olarak.",
+    mime_type="application/json",
+)
+async def review_resource(owner: str, repo: str, pr: str) -> str:
+    if _app is None:
+        raise ResourceError("Sunucu henüz hazır değil.")
+    try:
+        pr_number = int(pr)
+    except ValueError as exc:
+        raise ResourceError(f"PR numarası sayı olmalı, '{pr}' verildi.") from exc
+
+    full_repo = f"{owner}/{repo}"
+    comments = await collect_comments(_app.gh, full_repo, pr_number, after_date=None)
+    return GeminiReviews(
+        repo=full_repo,
+        pr=pr_number,
+        after_date=None,
+        counts=_counts(comments),
+        comments=comments,
+    ).model_dump_json(indent=2)
+
+
+@mcp.prompt(title="Gemini incelemesini ele al")
+def address_review(repo: str, pr: str = "") -> str:
+    """Read Gemini's review of a PR and work through its findings."""
+    target = f"{repo} PR #{pr}" if pr else f"{repo} deposundaki son PR"
+    return (
+        f"{target} için Gemini Code Assist incelemesini `get_gemini_reviews` ile al ve ele al:\n\n"
+        "1. Her bulguyu oku; satır yorumlarını ilgili dosya ve satırla eşleştir.\n"
+        "2. Bulguları ciddiyetine göre sırala: gerçek hata > güvenlik > bakım kolaylığı > stil.\n"
+        "3. Her biri için ya düzelt ya da neden düzeltmediğini tek cümleyle gerekçelendir.\n"
+        "4. Yanlış olduğunu düşündüğün bulgular varsa ayrıca listele — körlemesine uygulama.\n"
+        "5. Sonunda ne değiştiğini özetle."
+    )
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    mcp.run()

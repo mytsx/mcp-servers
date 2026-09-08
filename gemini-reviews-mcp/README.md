@@ -1,7 +1,7 @@
 # Gemini PR Reviews MCP Server
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white)](https://python.org)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-2026--07--28-purple)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PyPI](https://img.shields.io/pypi/v/gemini-reviews-mcp)](https://pypi.org/project/gemini-reviews-mcp/)
 
@@ -14,6 +14,10 @@ Fetch [Gemini Code Assist](https://cloud.google.com/gemini/docs/codeassist/overv
 - **Filtered Reviews** — Get only reviews after your last `/gemini review` comment
 - **All Comment Types** — PR reviews, line comments, and issue comments
 - **Full Pagination** — Handles large PRs with many comments
+- **Structured Output** — Comments come back as typed JSON with per-kind counts, not a text blob
+- **Progress Reporting** — Long fetches report which stage they are on
+- **Review Resource** — `review://{owner}/{repo}/{pr}` reads a PR's full Gemini history directly
+- **Prompt** — `address_review` walks the model through triaging and fixing the findings
 
 ## Quick Start
 
@@ -170,7 +174,32 @@ Get Gemini Code Assist reviews from a GitHub PR. By default, fetches only review
 | `after_last_review` | boolean | No | Only fetch reviews after your last `/gemini review` comment (default: true) |
 | `username` | string | No | GitHub username for filtering (defaults to authenticated user) |
 
+Returns structured output:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `repo` | string | Resolved `owner/repo` |
+| `pr` | integer | Resolved PR number |
+| `after_date` | string \| null | Cutoff applied, or null when the whole history was returned |
+| `counts` | object | `reviews`, `line_comments`, `issue_comments` |
+| `comments` | array | Reviews first, then line comments, then issue comments; each group oldest first |
+
+Missing token, unresolvable owner, or no PR found are returned as tool errors the
+model can act on, not as text that looks like a successful answer.
+
 </details>
+
+## Resources
+
+| URI | Description |
+|-----|-------------|
+| `review://{owner}/{repo}/{pr}` | Every Gemini comment on that PR, as JSON |
+
+## Prompts
+
+| Name | Description |
+|------|-------------|
+| `address_review` | Fetch the review, rank the findings by severity, fix or justify each one |
 
 ## Usage Examples
 
@@ -187,6 +216,11 @@ Use get_gemini_reviews for repo MyProject with after_last_review false
 # Full repo path
 Use get_gemini_reviews for repo someone/TheirRepo
 ```
+
+## Requirements
+
+Python 3.10+ and MCP SDK 2.x (`mcp>=2.2,<3`). The server speaks the 2026-07-28 protocol
+revision and still serves older MCP clients from the same process.
 
 ## License
 
