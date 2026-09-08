@@ -80,7 +80,9 @@ async def _start(command: Path, env: dict[str, str], label: str) -> bool:
 
 
 async def check_python(directory: str, script: str, env: dict[str, str]) -> bool:
-    wheels = sorted((ROOT / directory / "dist").glob("*.whl"))
+    # Newest by mtime, not by name: "2.0.0" sorts after "10.0.0" lexicographically,
+    # and a stale artifact left in dist/ would otherwise be the one verified.
+    wheels = sorted((ROOT / directory / "dist").glob("*.whl"), key=lambda w: w.stat().st_mtime)
     if not wheels:
         print(f"FAIL {directory:22} wheel yok — önce scripts/build-release.sh")
         return False
@@ -116,7 +118,9 @@ async def check_python(directory: str, script: str, env: dict[str, str]) -> bool
 
 
 async def check_node(name: str, binary: str, env: dict[str, str]) -> bool:
-    tarballs = sorted((ROOT / "dist" / "npm").glob(f"{name}-*.tgz"))
+    tarballs = sorted(
+        (ROOT / "dist" / "npm").glob(f"{name}-*.tgz"), key=lambda t: t.stat().st_mtime
+    )
     if not tarballs:
         print(f"FAIL {name:22} tarball yok — önce scripts/build-release.sh")
         return False
