@@ -87,7 +87,15 @@ async def check_python(directory: str, script: str, env: dict[str, str]) -> bool
 
     venv = Path(tempfile.mkdtemp(prefix="verify-release-"))
     try:
-        subprocess.run(["uv", "venv", str(venv), "-p", "3.12", "-q"], check=True, capture_output=True)
+        # No check=True and no pinned interpreter: a machine without the exact
+        # version should fail this one package, not abort the whole run.
+        created = subprocess.run(
+            ["uv", "venv", str(venv), "-q"], capture_output=True, text=True
+        )
+        if created.returncode != 0:
+            print(f"FAIL {directory:22} venv: {created.stderr.strip()[:120]}")
+            return False
+
         python = venv / "bin" / "python"
         install = subprocess.run(
             ["uv", "pip", "install", "-q", "--python", str(python), str(wheels[-1])],
@@ -115,7 +123,13 @@ async def check_node(name: str, binary: str, env: dict[str, str]) -> bool:
 
     project = Path(tempfile.mkdtemp(prefix="verify-release-"))
     try:
-        subprocess.run(["npm", "init", "-y"], cwd=project, capture_output=True, check=True)
+        started = subprocess.run(
+            ["npm", "init", "-y"], cwd=project, capture_output=True, text=True
+        )
+        if started.returncode != 0:
+            print(f"FAIL {name:22} npm init: {started.stderr.strip()[:120]}")
+            return False
+
         install = subprocess.run(
             ["npm", "install", "--silent", str(tarballs[-1])],
             cwd=project,

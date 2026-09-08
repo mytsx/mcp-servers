@@ -33,7 +33,7 @@ const ENTRY_POINT = '../index.js';
 const ENTRY_ENV = { GIB_API_URL: process.env.GIB_API_URL };
 
 const { Client } = await import('@modelcontextprotocol/client');
-const { InMemoryTransport } = await import('@modelcontextprotocol/client');
+const { InMemoryTransport } = await import('@modelcontextprotocol/server');
 const { buildServer } = await import('../index.js');
 
 const server = buildServer();
