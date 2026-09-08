@@ -57,6 +57,13 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **docusaurus-mcp**: a webpack chunk that fails to load is recorded as a failure rather than
+  treated as a chunk holding no document, so an SPA site's partial outage is refused like a
+  static one's.
+- **ssh-mcp-server**: the keepalive worker and ssh_reconnect go through the same connection
+  lock as everything else, so a background reconnect cannot race a request's.
+- **ssh-mcp-server**: only an actual collision is reported as one — an unwritable parent or an
+  exhausted quota now says what it is instead of sending the caller round the same retry.
 - **mapeg-oracle-mcp**: the read-only transaction is renewed per call. Opening one at connect
   froze its snapshot, so every later call served the startup view of the database.
   `explain_plan` says plainly that it needs `READ_ONLY=false`, since it writes to PLAN_TABLE.

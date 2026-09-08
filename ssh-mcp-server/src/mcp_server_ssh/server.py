@@ -373,12 +373,22 @@ class SSHConnection:
     async def ensure(self) -> bool:
         """Make sure the link is up. Returns True when it had to reconnect."""
         async with self._connect_lock:
-            if await self.is_alive():
-                return False
-            logger.info("SSH bağlantısı koptu, yeniden bağlanılıyor")
+            return await self._ensure_owned()
+
+    async def _ensure_owned(self) -> bool:
+        """As above, for a caller already holding the connection lock."""
+        if await self.is_alive():
+            return False
+        logger.info("SSH bağlantısı koptu, yeniden bağlanılıyor")
+        self.close()
+        await self.connect()
+        return True
+
+    async def reconnect(self) -> None:
+        """Drop the current link and build a new one, under the lock."""
+        async with self._connect_lock:
             self.close()
             await self.connect()
-            return True
 
     # -- running commands --------------------------------------------------
 
@@ -474,9 +484,8 @@ class SSHConnection:
                 )
                 if attempt >= MAX_RETRY_ATTEMPTS:
                     break
-                self.close()
                 try:
-                    await self.connect()
+                    await self.reconnect()
                     reconnected = True
                     await anyio.sleep(RETRY_DELAY_SECONDS)
                 except ToolError as reconnect_error:
@@ -564,12 +573,18 @@ class SSHConnection:
             return await anyio.to_thread.run_sync(
                 self._write_file_blocking, remote_path, content, append, exclusive
             )
-        except OSError as exc:
+        except FileExistsError as exc:
+            # The only error that means what the exclusive create was guarding
+            # against. An unwritable parent or an exhausted quota would leave
+            # the path absent, and reporting those as a collision would send the
+            # caller round the same loop forever.
             if exclusive:
                 raise ToolError(
                     f"'{remote_path}' kontrol edildikten sonra oluşturulmuş; üzerine "
                     "yazmak onay gerektirir. Aynı çağrıyı tekrarla, bu kez sorulacak."
                 ) from exc
+            raise ToolError(f"SFTP yazma hatası ({remote_path}): {exc}") from exc
+        except OSError as exc:
             raise ToolError(f"SFTP yazma hatası ({remote_path}): {exc}") from exc
 
     async def file_exists(self, remote_path: str) -> bool:
@@ -669,10 +684,11 @@ async def _keepalive_worker(ssh: SSHConnection) -> None:
     while True:
         await anyio.sleep(interval)
         try:
-            if not await ssh.is_alive():
-                logger.info("Keepalive kopmuş bağlantı buldu, yeniden bağlanılıyor")
-                ssh.close()
-                await ssh.connect()
+            # Through the same lock as everything else: the keepalive finding a
+            # dead client while a request is already reconnecting would
+            # otherwise build a second one and strand the first.
+            if await ssh.ensure():
+                logger.info("Keepalive bağlantıyı yeniledi")
         except ToolError as exc:
             logger.error("Keepalive yeniden bağlanamadı: %s", exc)
         except Exception as exc:
@@ -968,8 +984,7 @@ async def ssh_reconnect(
             connection=str(ssh.config), connected=True, reconnected=False, detail=detail
         )
 
-    ssh.close()
-    await ssh.connect()
+    await ssh.reconnect()
     alive = await ssh.is_alive()
     if not alive:
         raise ToolError("Yeniden bağlanıldı ama sağlık kontrolü geçilemedi.")

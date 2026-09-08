@@ -373,15 +373,30 @@ async def _parse_runtime_chunks(
     }
 
 
+class ChunkUnavailable(Exception):
+    """A chunk could not be fetched, as opposed to not being a document."""
+
+    def __init__(self, url: str, reason: str) -> None:
+        super().__init__(f"{url}: {reason}")
+        self.url = url
+
+
 async def _fetch_chunk(
     client: httpx2.AsyncClient, name_hash: str, content_hash: str
 ) -> Doc | None:
-    """Fetch a webpack chunk and extract doc metadata + content, or None if not a doc."""
+    """Fetch a webpack chunk and extract doc metadata + content, or None if not a doc.
+
+    A chunk that fails to load is not the same as a chunk that holds no
+    document: swallowing the difference let a partial outage install an index
+    with pages quietly missing from it.
+    """
     url = f"{SITE_URL}/assets/js/{name_hash}.{content_hash}.js"
     try:
-        text = (await client.get(url)).text
-    except httpx2.HTTPError:
-        return None
+        response = await client.get(url)
+        response.raise_for_status()
+        text = response.text
+    except httpx2.HTTPError as exc:
+        raise ChunkUnavailable(url, str(exc)) from exc
 
     # Metadata lives in JSON.parse('{...}')
     meta_match = re.search(r"JSON\.parse\('(\{.*?\})'\)", text)
@@ -555,7 +570,12 @@ async def build_index(
         logger.info("%d chunk bulundu", len(chunk_info))
 
         async def fetch_one(name_hash: str, content_hash: str) -> None:
-            doc = await _fetch_chunk(client, name_hash, content_hash)
+            try:
+                doc = await _fetch_chunk(client, name_hash, content_hash)
+            except ChunkUnavailable as exc:
+                logger.warning("Chunk alınamadı: %s", exc)
+                index.failed_pages.append(exc.url)
+                return
             if doc:
                 index.docs.append(doc)
 

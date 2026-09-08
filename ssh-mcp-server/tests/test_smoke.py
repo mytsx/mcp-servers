@@ -454,3 +454,35 @@ def test_a_file_that_appears_after_the_check_is_not_overwritten(server_module, h
 
     anyio.run(run)
     assert host.files["/tmp/racy.txt"] == b"someone else got here first"
+
+
+def test_a_real_sftp_failure_is_not_reported_as_a_collision(raw_module):
+    """Only EEXIST means the file appeared; other errors must say what they are.
+
+    Reporting an unwritable parent as a collision sent the caller round the same
+    retry forever, because retrying does not make the directory writable.
+    """
+
+    class _Unwritable:
+        def open(self, path, mode):
+            raise PermissionError(13, "Permission denied")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    connection = raw_module.SSHConnection(raw_module.SSHConfig.from_env())
+    connection.client = type("_Client", (), {"open_sftp": lambda self: _Unwritable()})()
+
+    async def already_connected() -> bool:
+        return False  # the link is fine; this test is about the write itself
+
+    connection.ensure = already_connected
+
+    async def run():
+        with pytest.raises(raw_module.ToolError, match="SFTP yazma hatası"):
+            await connection.write_file("/root/denied.txt", "x", exclusive=True)
+
+    anyio.run(run)
