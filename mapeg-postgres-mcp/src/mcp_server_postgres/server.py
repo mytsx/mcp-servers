@@ -7,6 +7,7 @@ Query, explore and analyze a PostgreSQL database over MCP.
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -177,8 +178,34 @@ def statement_keyword(sql: str) -> str:
     return parts[0].upper() if parts else ""
 
 
+# A data-modifying statement inside a CTE, e.g.
+#   WITH removed AS (DELETE FROM t RETURNING *) SELECT * FROM removed
+# The leading keyword there is WITH, so the first token alone is not enough.
+_CTE_WRITE = re.compile(
+    r"\b(INSERT\s+INTO|UPDATE\s|DELETE\s+FROM|MERGE\s+INTO|TRUNCATE\s)", re.IGNORECASE
+)
+
+
+def _strip_literals(sql: str) -> str:
+    """Blank out string literals and comments, so their contents cannot match."""
+    without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    without_line = re.sub(r"--[^\n]*", " ", without_block)
+    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+
+
 def is_write_query(sql: str) -> bool:
-    return statement_keyword(sql) in WRITE_KEYWORDS
+    """Whether this statement can change data.
+
+    Conservative by design: the answer gates both read-only mode and the
+    confirmation prompt, so a false negative runs an unconfirmed write while a
+    false positive only asks a question that was not strictly needed.
+    """
+    keyword = statement_keyword(sql)
+    if keyword in WRITE_KEYWORDS:
+        return True
+    if keyword == "WITH":
+        return _CTE_WRITE.search(_strip_literals(sql)) is not None
+    return False
 
 
 class Database:
@@ -235,11 +262,30 @@ class Database:
             affected = cursor.rowcount
         return rows, columns, affected
 
+    async def _run_cancellable(
+        self, sql: str, params: tuple | None
+    ) -> tuple[list[dict], list[str], int]:
+        """Run the statement so that cancelling the call also cancels the query.
+
+        `anyio.to_thread.run_sync` cannot interrupt the thread it started: on
+        cancellation it simply stops waiting, leaving the statement running and
+        holding its locks. Asking the server to cancel is what actually stops
+        the work, and it is safe to call from another thread.
+        """
+        try:
+            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+        except anyio.get_cancelled_exc_class():
+            connection = self.connection
+            if connection is not None:
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(connection.cancel)
+            raise
+
     async def fetch(self, sql: str, params: tuple | None = None) -> tuple[list[dict], list[str], int]:
         """Run a statement and return (rows, columns, rowcount)."""
         await self.ensure()
         try:
-            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+            return await self._run_cancellable(sql, params)
         except psycopg2.Error as exc:
             raise ToolError(f"SQL hatası: {str(exc).strip()}") from exc
 

@@ -30,9 +30,11 @@ const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || path.join(os.tmpdir(), 'asg
 
 // Commands that destroy something on the remote host. These are confirmed with
 // the user before they are typed into the terminal.
-// `rm -rf`, `rm -r -f`, and the GNU long forms `rm --recursive --force`. Only
-// matching a single dash let `rm --recursive --force /path` through unasked.
-const RM_DESTRUCTIVE = /\brm\s+(-[a-z]*[rf]|--(recursive|force|dir)\b)/i;
+// An `rm` whose options include a recursive or force flag, wherever it appears:
+// `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`. Matching only the
+// first option let `rm -v -r /path` and `rm --recursive --force /path` through.
+const RM_DESTRUCTIVE =
+  /\brm\s+(?:-{1,2}[a-z-]+\s+)*(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)/i;
 
 const DESTRUCTIVE_PATTERNS = [
   [RM_DESTRUCTIVE, 'dosya/dizin siliyor'],

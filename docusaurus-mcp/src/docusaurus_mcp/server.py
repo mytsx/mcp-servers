@@ -15,7 +15,6 @@ import json
 import logging
 import os
 import re
-import sys
 import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -48,12 +47,10 @@ TIMEOUT = int(os.environ.get("DOCUSAURUS_TIMEOUT", "30"))
 MAX_CONCURRENT_FETCHES = 10
 
 if not SITE_URL:
-    print(
-        "HATA: DOCUSAURUS_URL environment variable zorunludur.\n"
-        "Örnek: DOCUSAURUS_URL=https://docs.example.com",
-        file=sys.stderr,
+    logger.error(
+        "DOCUSAURUS_URL environment variable zorunludur. Örnek: DOCUSAURUS_URL=https://docs.example.com"
     )
-    sys.exit(1)
+    raise SystemExit(1)
 
 
 def _new_client() -> httpx2.AsyncClient:
@@ -746,10 +743,20 @@ async def refresh_index(ctx: Context[AppContext]) -> IndexStatus:
         await ctx.report_progress(done, total, message)
 
     try:
-        app.index = await build_index(app.client, progress=report)
+        fresh = await build_index(app.client, progress=report)
     except httpx2.HTTPError as exc:
         raise ToolError(f"{SITE_URL} taranamadı: {exc}") from exc
 
+    # build_index treats a failed sitemap as best-effort and can come back with
+    # nothing. Installing that would report success with doc_count=0 and break
+    # every tool until the next refresh, so the working index is kept instead.
+    if not fresh.docs:
+        raise ToolError(
+            f"{SITE_URL} tarandı ama hiç döküman bulunamadı; mevcut indeks "
+            f"({len(app.index.docs)} döküman) korundu."
+        )
+
+    app.index = fresh
     return IndexStatus(
         site_title=app.index.site_title,
         site_url=SITE_URL,

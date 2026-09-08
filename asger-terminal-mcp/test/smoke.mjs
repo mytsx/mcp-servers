@@ -73,12 +73,15 @@ for (const command of [
   'rm -r -f /tmp/x',
   'rm --recursive --force /tmp/x',
   'rm --force /tmp/x',
+  'rm -v -r /tmp/x',
+  'rm --verbose --recursive /tmp/x',
+  'rm -i -r /tmp/x',
   'reboot',
   'docker system prune -f',
 ]) {
   assert.ok(destructiveReason(command), `${command} yıkıcı sayılmalıydı`);
 }
-for (const command of ['ls -la', 'rm --help', 'cat /etc/motd']) {
+for (const command of ['ls -la', 'rm --help', 'rm file.txt', 'cat /etc/motd']) {
   assert.equal(destructiveReason(command), null, `${command} yıkıcı sayılmamalıydı`);
 }
 console.log('DESTRUCTIVE PATTERNS: ok');

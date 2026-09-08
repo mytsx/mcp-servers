@@ -130,8 +130,14 @@ def _client(server_module, confirm=True, asked=None):
         ("rm --recursive --force /var", True, True),
         ("rm --recursive --force /var/tmp/build", False, True),
         ("rm --recursive ./build", False, True),
+        # A destructive flag anywhere in the options, not just the first one.
+        ("rm -v -r /", True, True),
+        ("rm --verbose --recursive /", True, True),
+        ("rm -v -r /tmp/build", False, True),
+        ("rm -i -r ./build", False, True),
         # ...but reading the manual is not destructive.
         ("rm --help", False, False),
+        ("rm file.txt", False, False),
         ("reboot now", False, True),
         ("docker system prune -f", False, True),
         ("ls -la", False, False),

@@ -87,7 +87,12 @@ BLOCKED_PATTERNS = [
 
 # Commands that are legitimate but destructive: the user is asked first.
 CONFIRM_PATTERNS = [
-    (r"\brm\s+(-[a-z]*[rf]|--(recursive|force|dir)\b)", "dosya/dizin siliyor"),
+    (
+        # A recursive/force flag anywhere in the options, not just the first one:
+        # `rm -rf`, `rm -r -f`, `rm -v -r`, `rm --verbose --recursive`.
+        rf"\brm\s+{_RM_FLAGS}(?:-[a-z]*[rf]|--(?:recursive|force|dir)\b)",
+        "dosya/dizin siliyor",
+    ),
     (r"\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b|\binit\s+[06]\b", "sunucuyu kapatıyor/yeniden başlatıyor"),
     (r"\bkill\s+-9\b|\bkillall\b|\bpkill\b", "süreçleri zorla sonlandırıyor"),
     (r"\btruncate\b|>\s*/", "dosya içeriğini siliyor"),

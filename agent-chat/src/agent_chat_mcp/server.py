@@ -273,6 +273,30 @@ class ChatStore:
         """
         return self._fresh(self.agents(room))
 
+    def has_content(self, room: str) -> bool:
+        """Whether the room holds anything a clear would destroy."""
+        return bool(self.messages(room)) or bool(self.agents(room))
+
+    def clear_messages(self, room: str) -> int:
+        """Empty the message log, returning how many messages were removed."""
+
+        def wipe(messages: list) -> int:
+            removed = len(messages)
+            messages.clear()
+            return removed
+
+        return self._update_json(self.room_dir(room) / "messages.json", [], wipe)
+
+    def clear_agents(self, room: str) -> int:
+        """Empty the roster, returning how many agents were removed."""
+
+        def wipe(agents: dict) -> int:
+            removed = len(agents)
+            agents.clear()
+            return removed
+
+        return self._update_json(self.room_dir(room) / "agents.json", {}, wipe)
+
     def rooms(self) -> list[RoomInfo]:
         if not self.chat_dir.exists():
             return []
@@ -544,17 +568,22 @@ async def confirm_clear(
     ctx: Context[AppContext],
     room: str = "",
 ) -> ClearConfirmation | Elicit[ClearConfirmation]:
-    """Ask before wiping a room that still has anything in it."""
-    store = ctx.request_context.lifespan_context.store
-    message_count = len(store.messages(room))
-    agent_count = len(store.agents(room))
+    """Ask before wiping a room that still has anything in it.
 
-    if message_count == 0 and agent_count == 0:
+    The question is derived only from the room name. It deliberately does not
+    quote live message or agent counts: a resolver runs again on every round of
+    a multi-round-trip call, so a question built from changing state would be a
+    different question each time and would not match the recorded answer. What
+    the user approves is clearing this room, and the room is cleared as it
+    stands when they answer.
+    """
+    store = ctx.request_context.lifespan_context.store
+    if not store.has_content(room):
         return ClearConfirmation(confirm=True)  # nothing to lose, nothing to ask
 
     return Elicit(
-        f"'{store.room_name(room)}' odasındaki {message_count} mesaj ve {agent_count} agent "
-        "kaydı kalıcı olarak silinecek. Onaylıyor musun?",
+        f"'{store.room_name(room)}' odasındaki bütün mesajlar ve agent kayıtları "
+        "kalıcı olarak silinecek. Onaylıyor musun?",
         ClearConfirmation,
     )
 
@@ -579,10 +608,11 @@ def clear_room(
     if not confirmation.confirm:
         raise ToolError("Temizleme iptal edildi; oda olduğu gibi bırakıldı.")
 
-    message_count = len(store.messages(room))
-    agent_count = len(store.agents(room))
-    store.save_messages([], room)
-    store.save_agents({}, room)
+    # Counted as they are removed, under the same lock as the write, so the
+    # reported numbers are what was actually deleted rather than a reading
+    # taken before the user answered.
+    message_count = store.clear_messages(room)
+    agent_count = store.clear_agents(room)
 
     logger.info("'%s' odası temizlendi", store.room_name(room))
     return ClearResult(

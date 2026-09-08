@@ -5,13 +5,15 @@ Query and explore an Oracle database (11g-23ai) over MCP, including PL/SQL
 source and DBMS_OUTPUT.
 """
 
+import functools
+import inspect
 import json
 import logging
 import os
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -254,7 +256,9 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, oracledb.LOB):
-        return value.read()
+        # A CLOB reads as str, a BLOB as bytes — the latter still has to be
+        # normalized or it would put raw binary into a JSON result.
+        return _jsonable(value.read())
     if isinstance(value, (bytes, memoryview)):
         return f"<{len(bytes(value))} bytes>"
     return str(value)
@@ -275,8 +279,38 @@ def statement_keyword(sql: str) -> str:
     return parts[0].upper() if parts else ""
 
 
+# Statements that open a PL/SQL block or invoke code. What runs inside is
+# opaque to this server, so they are treated as writes.
+PLSQL_KEYWORDS = frozenset(["BEGIN", "DECLARE", "CALL", "EXEC", "EXECUTE"])
+
+# A data-modifying statement inside a CTE or a block body.
+_EMBEDDED_WRITE = re.compile(
+    r"\b(INSERT\s+INTO|UPDATE\s|DELETE\s+FROM|MERGE\s+INTO|TRUNCATE\s|DROP\s)",
+    re.IGNORECASE,
+)
+
+
+def _strip_literals(sql: str) -> str:
+    """Blank out string literals and comments, so their contents cannot match."""
+    without_block = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    without_line = re.sub(r"--[^\n]*", " ", without_block)
+    return re.sub(r"'(?:''|[^'])*'", "''", without_line)
+
+
 def is_write_query(sql: str) -> bool:
-    return statement_keyword(sql) in WRITE_KEYWORDS
+    """Whether this statement can change the database.
+
+    Conservative by design: the answer gates both read-only mode and the
+    confirmation prompt, so a false negative runs an unconfirmed write while a
+    false positive only asks a question that was not strictly needed.
+    `BEGIN DELETE FROM t; END;` starts with BEGIN, and a WITH can hide a DELETE.
+    """
+    keyword = statement_keyword(sql)
+    if keyword in WRITE_KEYWORDS or keyword in PLSQL_KEYWORDS:
+        return True
+    if keyword == "WITH":
+        return _EMBEDDED_WRITE.search(_strip_literals(sql)) is not None
+    return False
 
 
 def identifier(name: str, *, what: str = "Nesne adı") -> str:
@@ -388,12 +422,31 @@ class Database:
             rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
             return rows, columns, len(rows)
 
+    async def _run_cancellable(
+        self, sql: str, params: dict | None
+    ) -> tuple[list[dict], list[str], int]:
+        """Run the statement so that cancelling the call also cancels the query.
+
+        `anyio.to_thread.run_sync` cannot interrupt the thread it started: on
+        cancellation it simply stops waiting, leaving the statement running and
+        holding its locks. Asking the server to cancel is what actually stops
+        the work, and it is safe to call from another thread.
+        """
+        try:
+            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+        except anyio.get_cancelled_exc_class():
+            connection = self.connection
+            if connection is not None:
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(connection.cancel)
+            raise
+
     async def fetch(
         self, sql: str, params: dict | None = None
     ) -> tuple[list[dict], list[str], int]:
         await self.ensure()
         try:
-            return await anyio.to_thread.run_sync(self._fetch_blocking, sql, params)
+            return await self._run_cancellable(sql, params)
         except oracledb.Error as exc:
             raise ToolError(f"Oracle SQL hatası: {str(exc).strip()}") from exc
 
@@ -519,6 +572,68 @@ def _require_app() -> AppContext:
     if _app is None:
         raise ResourceError("Sunucu henüz hazır değil.")
     return _app
+
+
+def _log_exploration(tool_name: str, describe: Callable[..., str]):
+    """Record an exploration tool call in the query history.
+
+    The pre-migration handlers each carried their own copy of this logging;
+    without it `get_query_history` sees only execute_sql, and its `tool_name`
+    filter cannot reach the rest.
+    """
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            bound = inspect.signature(fn).bind(*args, **kwargs)
+            bound.apply_defaults()
+            db = _db(bound.arguments["ctx"])
+            summary = describe(**{
+                name: value
+                for name, value in bound.arguments.items()
+                if name != "ctx"
+            })
+            started = time.time()
+            try:
+                result = await fn(*args, **kwargs)
+            except ToolError as exc:
+                db.log_query(
+                    tool_name,
+                    query_text=summary,
+                    execution_time_ms=(time.time() - started) * 1000,
+                    status="error",
+                    row_count=0,
+                    error_message=str(exc),
+                )
+                raise
+            db.log_query(
+                tool_name,
+                query_text=summary,
+                execution_time_ms=(time.time() - started) * 1000,
+                status="success",
+                row_count=_result_size(result),
+                error_message="",
+            )
+            return result
+
+        return wrapper
+
+    return decorate
+
+
+def _result_size(result: object) -> int:
+    """How many rows a tool result represents, for the history entry."""
+    if isinstance(result, list):
+        return len(result)
+    if isinstance(result, ObjectListing):
+        return len(result.objects)
+    if isinstance(result, Relationships):
+        return len(result.outgoing) + len(result.incoming)
+    if isinstance(result, TableDescription):
+        return len(result.columns)
+    if isinstance(result, SourceCode):
+        return result.line_count
+    return 0
 
 
 # -- execute_sql -------------------------------------------------------------
@@ -652,6 +767,7 @@ async def _run_sql(db: Database, sql: str, limit: int) -> QueryResult:
     description="Get a table's columns and row count from USER_TAB_COLUMNS.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('describe_table', lambda table_name: f"DESCRIBE TABLE: {table_name}")
 async def describe_table(
     table_name: Annotated[str, Field(min_length=1, description="Table name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -760,6 +876,7 @@ async def get_source_code(
     description="Get a view's SQL definition from USER_VIEWS.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('get_view_definition', lambda view_name: f"GET VIEW: {view_name}")
 async def get_view_definition(
     view_name: Annotated[str, Field(min_length=1, description="View name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -786,6 +903,7 @@ async def get_view_definition(
     description="Search tables by name pattern (% wildcard) in USER_TABLES.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('search_tables', lambda pattern, limit: f"SEARCH TABLES: {pattern}")
 async def search_tables(
     pattern: Annotated[str, Field(min_length=1, description="Name pattern, % as wildcard.")],
     ctx: Context[AppContext],
@@ -816,6 +934,7 @@ async def search_tables(
     description="Search for columns across every table in USER_TAB_COLUMNS.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('search_columns', lambda pattern, data_type, limit: f"SEARCH COLUMNS: {pattern} ({data_type or 'ALL'})")
 async def search_columns(
     pattern: Annotated[str, Field(min_length=1, description="Column name pattern, % as wildcard.")],
     ctx: Context[AppContext],
@@ -851,6 +970,7 @@ async def search_columns(
     description="Get every index on a table, with its columns in order.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('get_table_indexes', lambda table_name: f"GET INDEXES: {table_name}")
 async def get_table_indexes(
     table_name: Annotated[str, Field(min_length=1, description="Table name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -896,6 +1016,7 @@ _CONSTRAINT_LABELS = {"P": "Primary Key", "R": "Foreign Key", "C": "Check", "U":
     description="Get a table's constraints: primary keys, foreign keys, checks and uniques.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('get_table_constraints', lambda table_name, constraint_type: f"GET CONSTRAINTS: {table_name} ({constraint_type or 'ALL'})")
 async def get_table_constraints(
     table_name: Annotated[str, Field(min_length=1, description="Table name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -946,6 +1067,7 @@ async def get_table_constraints(
     description="Analyze a table's size, row count and optimizer statistics.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('analyze_table_size', lambda table_name: f"ANALYZE TABLE: {table_name}")
 async def analyze_table_size(
     table_name: Annotated[str, Field(min_length=1, description="Table name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -991,6 +1113,7 @@ async def analyze_table_size(
     description="Get a table's foreign key relationships, in either or both directions.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('get_table_relationships', lambda table_name, direction: f"GET RELATIONSHIPS: {table_name} ({direction})")
 async def get_table_relationships(
     table_name: Annotated[str, Field(min_length=1, description="Table name (case-insensitive).")],
     ctx: Context[AppContext],
@@ -1047,6 +1170,7 @@ def _relationship(row: dict) -> Relationship:
     description="List database objects of one type from USER_OBJECTS.",
     annotations=_READ_ONLY,
 )
+@_log_exploration('list_database_objects', lambda object_type, pattern, limit: f"LIST OBJECTS: {object_type} ({pattern or 'ALL'})")
 async def list_database_objects(
     object_type: Annotated[ObjectType, Field(description="Which kind of object to list.")],
     ctx: Context[AppContext],
@@ -1089,6 +1213,7 @@ async def list_database_objects(
         read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
     ),
 )
+@_log_exploration('explain_plan', lambda sql, format: f"EXPLAIN PLAN: {sql[:200]}")
 async def explain_plan(
     sql: Annotated[str, Field(min_length=1, description="SQL query to explain.")],
     ctx: Context[AppContext],

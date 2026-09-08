@@ -141,3 +141,32 @@ def test_refresh_index_reports_progress(mcp_server):
             assert len(seen) >= 4
 
     anyio.run(run)
+
+
+def test_a_failed_refresh_keeps_the_working_index(mcp_server, monkeypatch):
+    """An empty crawl must not be installed over a good index.
+
+    build_index treats a failed sitemap as best-effort, so a transient failure
+    would otherwise replace a working index with an empty one and report
+    success with doc_count=0.
+    """
+    import docusaurus_mcp.server as module
+
+    async def empty_crawl(client, progress=module._noop_progress):
+        return module.DocIndex(site_title="Test Docs")
+
+    async def run():
+        async with Client(mcp_server) as client:
+            before = (await client.call_tool("get_doc_structure", {})).structured_content
+            assert before["doc_count"] == 3
+
+            monkeypatch.setattr(module, "build_index", empty_crawl)
+            failed = await client.call_tool("refresh_index", {})
+            assert failed.is_error is True
+            assert "korundu" in failed.content[0].text
+
+            monkeypatch.undo()
+            after = (await client.call_tool("get_doc_structure", {})).structured_content
+            assert after["doc_count"] == 3
+
+    anyio.run(run)

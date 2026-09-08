@@ -71,7 +71,10 @@ async function callGibApi(endpoint, params) {
       body: JSON.stringify(params),
     });
   } catch (error) {
-    throw new Error(`GİB API'sine ulaşılamadı (${BASE_URL}): ${error.message}`);
+    // Anything can be thrown, not just an Error; reading .message off a
+    // non-Error would mask the real failure with a TypeError.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`GİB API'sine ulaşılamadı (${BASE_URL}): ${reason}`, { cause: error });
   }
 
   if (!response.ok) {

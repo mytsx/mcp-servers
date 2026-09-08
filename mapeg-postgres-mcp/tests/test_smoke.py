@@ -158,6 +158,47 @@ def test_wide_numerics_are_not_rounded(mcp_server):
     anyio.run(run)
 
 
+@pytest.mark.parametrize(
+    ("sql", "is_write"),
+    [
+        ("SELECT 1", False),
+        ("WITH x AS (SELECT 1) SELECT * FROM x", False),
+        ("SELECT 'delete from t' AS s", False),
+        ("DELETE FROM t", True),
+        # A data-modifying CTE: the leading keyword is WITH, but this deletes.
+        ("WITH removed AS (DELETE FROM t RETURNING *) SELECT * FROM removed", True),
+        ("WITH n AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM n", True),
+    ],
+)
+def test_write_detection(mcp_server, sql, is_write):
+    import mcp_server_postgres.server as module
+
+    assert module.is_write_query(sql) is is_write
+
+
+def test_a_write_hidden_in_a_cte_is_confirmed(mcp_server, database):
+    """The user must be asked before a DELETE that hides inside a WITH."""
+    asked: list[str] = []
+
+    async def run():
+        async with _client(mcp_server, confirm=False, asked=asked) as client:
+            result = await client.call_tool(
+                "execute_sql",
+                {
+                    "sql": "WITH removed AS (DELETE FROM mcp_test_musteriler "
+                    "WHERE id = 3 RETURNING *) SELECT * FROM removed"
+                },
+            )
+            assert result.is_error is True
+            assert asked, "a CTE that deletes must be confirmed"
+
+    anyio.run(run)
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM mcp_test_musteriler")
+        assert cursor.fetchone()[0] == 3
+
+
 def test_sql_errors_are_tool_errors(mcp_server):
     async def run():
         async with _client(mcp_server) as client:

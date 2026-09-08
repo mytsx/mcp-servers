@@ -57,6 +57,19 @@ environment that resolved `mcp` to 2.x could no longer start the Python servers 
   rather than only a filename the client cannot open.
 - **gib-api-mcp**: dates and amounts are validated before the call instead of being
   forwarded to the API as-is; `node-fetch` dropped for Node 20's built-in `fetch`.
+- **mapeg-oracle-mcp**: a PL/SQL block is treated as a write. `BEGIN DELETE FROM t; END;`
+  starts with `BEGIN`, so it used to skip both the confirmation and read-only mode.
+- **mapeg-postgres-mcp**: a data-modifying CTE is treated as a write. The leading keyword of
+  `WITH removed AS (DELETE ...) SELECT ...` is `WITH`, so it used to run unconfirmed.
+- **mapeg-postgres-mcp** and **mapeg-oracle-mcp**: cancelling a call now cancels the query.
+  A worker thread cannot be interrupted, so the statement kept running and holding its locks;
+  the connection is asked to cancel instead.
+- **mapeg-oracle-mcp**: the exploration tools record their calls in the query history again —
+  the rewrite had left only `execute_sql` visible to `get_query_history`.
+- **mapeg-oracle-mcp**: a BLOB read out of a LOB is normalized instead of putting raw bytes
+  into a JSON result.
+- **docusaurus-mcp**: a refresh that comes back empty keeps the working index instead of
+  installing the empty one and reporting success with `doc_count=0`.
 - **mapeg-postgres-mcp**: a `numeric` wider than an IEEE-754 float was converted to `float`
   and silently rounded on its way into the result. Decimals now travel as strings.
 - **gib-api-mcp**: dates are checked against the calendar, not just for eight digits, so

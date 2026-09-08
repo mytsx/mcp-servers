@@ -20,7 +20,6 @@ import logging
 import os
 import re
 import ssl
-import sys
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -55,12 +54,10 @@ if not VERIFY_TLS:
     )
 
 if not CHATBOT_URL:
-    print(
-        "HATA: N8N_CHATBOT_URL environment variable zorunludur.\n"
-        "Örnek: N8N_CHATBOT_URL=https://n8n.example.com/webhook/my-bot/chat",
-        file=sys.stderr,
+    logger.error(
+        "N8N_CHATBOT_URL environment variable zorunludur. Örnek: N8N_CHATBOT_URL=https://n8n.example.com/webhook/my-bot/chat"
     )
-    sys.exit(1)
+    raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------

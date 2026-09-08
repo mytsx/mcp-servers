@@ -158,6 +158,45 @@ def test_plsql_block_returns_dbms_output(mcp_server):
     anyio.run(run)
 
 
+@pytest.mark.parametrize(
+    ("sql", "is_write"),
+    [
+        ("SELECT 1 FROM dual", False),
+        ("WITH x AS (SELECT 1 FROM dual) SELECT * FROM x", False),
+        ("UPDATE t SET a = 1", True),
+        # A PL/SQL block is opaque, so it counts as a write even when it is not.
+        ("BEGIN DELETE FROM t; END;", True),
+        ("BEGIN NULL; END;", True),
+        ("DECLARE v NUMBER; BEGIN NULL; END;", True),
+        ("CALL my_proc()", True),
+    ],
+)
+def test_write_detection(mcp_server, sql, is_write):
+    import mcp_server_oracle.server as module
+
+    assert module.is_write_query(sql) is is_write
+
+
+def test_a_plsql_block_that_deletes_is_confirmed(mcp_server, database):
+    """BEGIN ... END; starts with BEGIN, but it can still delete rows."""
+    asked: list[str] = []
+
+    async def run():
+        async with _client(mcp_server, confirm=False, asked=asked) as client:
+            result = await client.call_tool(
+                "execute_sql",
+                {"sql": "BEGIN DELETE FROM mcp_test_musteriler WHERE id = 2; COMMIT; END;"},
+            )
+            assert result.is_error is True
+            assert asked, "a PL/SQL block must be confirmed"
+
+    anyio.run(run)
+
+    with database.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM mcp_test_musteriler")
+        assert cursor.fetchone()[0] == 2
+
+
 def test_write_is_confirmed_and_a_refusal_changes_nothing(mcp_server, database):
     asked: list[str] = []
 
@@ -265,5 +304,50 @@ def test_resources_and_prompts(mcp_server):
                 "review_plsql",
                 "analyze_table",
             }
+
+    anyio.run(run)
+
+
+def test_exploration_tools_are_recorded_in_history(mcp_server):
+    """get_query_history has to see more than execute_sql.
+
+    The pre-migration handlers each logged their own call; the rewrite dropped
+    that, which left the history — and its tool_name filter — nearly empty.
+    """
+
+    async def run():
+        async with _client(mcp_server) as client:
+            await client.call_tool("describe_table", {"table_name": "mcp_test_musteriler"})
+            await client.call_tool("search_tables", {"pattern": "%MCP_TEST%"})
+            await client.call_tool("get_table_indexes", {"table_name": "mcp_test_musteriler"})
+
+            history = await client.call_tool("get_query_history", {"limit": 50})
+            logged = {entry["tool_name"] for entry in history.structured_content["entries"]}
+            assert {"describe_table", "search_tables", "get_table_indexes"} <= logged
+
+            # The tool_name filter reaches them too.
+            filtered = await client.call_tool(
+                "get_query_history", {"limit": 50, "tool_name": "search_tables"}
+            )
+            entries = filtered.structured_content["entries"]
+            assert entries and all(e["tool_name"] == "search_tables" for e in entries)
+
+    anyio.run(run)
+
+
+def test_a_failed_exploration_is_recorded_as_an_error(mcp_server):
+    async def run():
+        async with _client(mcp_server) as client:
+            missing = await client.call_tool("describe_table", {"table_name": "yok_boyle_tablo"})
+            assert missing.is_error is True
+
+            history = await client.call_tool(
+                "get_query_history", {"limit": 50, "status": "error"}
+            )
+            entries = history.structured_content["entries"]
+            assert any(
+                e["tool_name"] == "describe_table" and "yok_boyle_tablo" in e["query_text"]
+                for e in entries
+            )
 
     anyio.run(run)
